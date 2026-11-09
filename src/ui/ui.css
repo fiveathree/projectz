@@ -180,6 +180,9 @@ button:hover { border-color: var(--cyan); }
   #bars { gap: 6px; }
   .profs { grid-template-columns: repeat(3, minmax(110px, 1fr)); }
 }
+/* 觸控屏電腦用手指玩時（唔係 coarse 但開咗觸控掣）：提示同樣放上面 */
+.touch-mode #prompt { bottom: auto; top: 54px; right: 12px; white-space: nowrap; }
+.touch-mode #status { bottom: auto; top: 54px; left: 8px; }
 @media (pointer: coarse) and (orientation: portrait) {
   #rotate { display: flex; z-index: 99; }
 }

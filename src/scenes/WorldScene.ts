@@ -25,7 +25,7 @@ import { closeInventory, inventoryOpen, openInventory, refreshInventory } from '
 import { drawMap } from '../ui/map';
 import { closePhone, openPhone, phoneCanvas, phoneOpen, phoneTab, renderPhone } from '../ui/phone';
 import { closeMenu, showDayCard, showDeath, showEnding, showPause, showProfessions } from '../ui/menu';
-import { isTouch, setupTouch, stick } from '../ui/touch';
+import { isTouch, setupTouch, showTouch, stick } from '../ui/touch';
 
 const T = CONFIG.tile;
 const V = CONFIG.vision;
@@ -370,15 +370,24 @@ export class WorldScene extends Phaser.Scene implements ZWorld, HWorld {
         if (a === 'pause') this.pause();
       };
     }
+    // 觸控掣：開局按主要輸入決定；之後用手指撳就轉手機模式，用滑鼠撳就轉返電腦模式
     this.touch = isTouch();
-    if (this.touch)
-      setupTouch({
-        attack: () => this.attack(),
-        shove: () => this.shove(),
-        use: () => this.interact(),
-        act2: () => this.act2(),
-        throw: () => this.throwMolotov(),
-      });
+    showTouch(this.touch);
+    const onPointer = (e: PointerEvent) => {
+      const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
+      if (touch === this.touch || (e.pointerType !== 'mouse' && !touch)) return;
+      this.touch = touch;
+      showTouch(touch);
+    };
+    addEventListener('pointerdown', onPointer, true);
+    this.events.once('shutdown', () => removeEventListener('pointerdown', onPointer, true));
+    setupTouch({
+      attack: () => this.attack(),
+      shove: () => this.shove(),
+      use: () => this.interact(),
+      act2: () => this.act2(),
+      throw: () => this.throwMolotov(),
+    });
   }
 
   // ───────────────────────── 格仔 / ZWorld ─────────────────────────

@@ -1,12 +1,22 @@
 // 手機觸控（DESIGN.md §4.2）：左下虛擬搖桿（推到盡 = 跑），右下攻擊 / 推撞 / 互動
 import { CONFIG } from '../config';
 
-export const isTouch = () => matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+/**
+ * 開局用「主要輸入」判斷：手機 / 平板（pointer: coarse）先出觸控掣。
+ * 唔好用 'ontouchstart'：Windows 觸控屏手提電腦都有，會令電腦版出咗手機掣、滑鼠攻擊失效。
+ * 之後真係用手指撳先切換（見 WorldScene）。
+ */
+export const isTouch = () => matchMedia('(pointer: coarse)').matches;
+
+/** 顯示 / 收埋觸控掣 */
+export const showTouch = (on: boolean) => {
+  document.getElementById('touch')!.classList.toggle('hidden', !on);
+  document.body.classList.toggle('touch-mode', on);
+};
 
 export const stick = { x: 0, y: 0, mag: 0 };
 
 export function setupTouch(on: { attack(): void; shove(): void; use(): void; act2(): void; throw(): void }) {
-  document.getElementById('touch')!.classList.remove('hidden');
   const base = document.getElementById('stick')!;
   const knob = base.firstElementChild as HTMLElement;
   const R = CONFIG.touch.joystickRadius;
