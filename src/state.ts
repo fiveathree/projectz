@@ -80,6 +80,8 @@ export interface PlayerState {
   panic: number;
   battery: number;
   bleeding: boolean;
+  /** 出血仲有幾多秒自己止 */
+  bleedLeft?: number;
   /** 感染：幾時死（遊戲分鐘）；null = 冇感染 */
   infectDeath: number | null;
   infectAt: number | null;
@@ -225,7 +227,7 @@ export function switchDistrict(s: GameState, to: DistrictId) {
 
 export function newPlayer(prof: string, x: number, y: number, minutes: number): PlayerState {
   const p = PROFESSIONS[prof];
-  const inv = (p.start ?? []).map(makeItem);
+  const inv = [...CONFIG.needs.startKit, ...(p.start ?? [])].map(makeItem);
   const weapon = inv.find((i) => ITEMS[i.id].kind === 'weapon') ?? null;
   return {
     prof,

@@ -444,6 +444,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld, HWorld {
     } else if (r < Z.biteChance + Z.scratchChance + Z.lacerationChance) {
       if (!p.bleeding) toast('🩸 傷口出血！用繃帶止血');
       p.bleeding = true;
+      p.bleedLeft = CONFIG.needs.bleedStopSec;
     }
     this.stampBlood(this.player.x, this.player.y);
   }
@@ -489,6 +490,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld, HWorld {
     this.cameras.main.flash(120, 110, 20, 32);
     if (this.rand() < Z.lacerationChance && !p.bleeding) {
       p.bleeding = true;
+      p.bleedLeft = CONFIG.needs.bleedStopSec;
       toast('🩸 你被斬傷，出血！');
     }
     this.stampBlood(this.player.x, this.player.y);
@@ -820,6 +822,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld, HWorld {
     this.sfx('glass', x, y);
     if (fists && this.rand() < 0.5) {
       this.s.player.bleeding = true;
+      this.s.player.bleedLeft = CONFIG.needs.bleedStopSec;
       toast('徒手打爛窗，割親手出血！');
     } else toast('打爛咗隻窗（好嘈）');
   }

@@ -38,6 +38,11 @@ export function tickNeeds(s: GameState, dtSec: number, dtMin: number, ctx: Needs
   }
   if (p.bleeding) {
     p.hp -= N.bleedHpPerSec * dtSec;
+    p.bleedLeft = (p.bleedLeft ?? N.bleedStopSec) - dtSec;
+    if (p.bleedLeft <= 0) {
+      p.bleeding = false; // 傷口自己凝固
+      p.bleedLeft = undefined;
+    }
     cause = '失血過多';
   }
   if (p.infectDeath !== null && p.infectAt !== null) {

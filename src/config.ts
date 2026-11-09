@@ -56,7 +56,7 @@ export const CONFIG = {
     perDistrict: 3,
     bandageHeal: 30,
     ally: { hp: 60, speed: 82, runSpeed: 130, followTiles: 2.2, fightTiles: 3.5, guardTiles: 5 },
-    raider: { hp: 70, speed: 88, sightTiles: 8, alertSec: 8, damageMin: 7, damageMax: 13, cooldown: 1.1, count: 4, weapons: ['crowbar', 'bat', 'knife', 'pipe'] },
+    raider: { hp: 70, speed: 88, sightTiles: 8, alertSec: 8, damageMin: 5, damageMax: 9, cooldown: 1.3, count: 4, weapons: ['crowbar', 'bat', 'knife', 'pipe'] },
   },
 
   /** 沙盒：喪屍上限、每日隨機事件 */
@@ -128,7 +128,11 @@ export const CONFIG = {
     staminaRegenPerSec: 10,
     /** 肚餓到零時體力上限變幾多倍 */
     starveStaminaMul: 0.6,
-    bleedHpPerSec: 0.5,
+    bleedHpPerSec: 0.25,
+    /** 出血幾多秒後自己止（2026-11 調易：之前唔會自己停，好易流血至死） */
+    bleedStopSec: 40,
+    /** 每個職業開局都有嘅基本物資 */
+    startKit: ['bandage', 'water'],
     /** 每隻視野內（6 格內）喪屍每秒加幾多驚恐 */
     panicPerZombie: 2.5,
     panicNearTiles: 6,
@@ -252,7 +256,7 @@ export const CONFIG = {
     /** 第 6 日屍群 */
     hordeSize: 60,
     wanderSpeed: 25,
-    chaseSpeed: 70,
+    chaseSpeed: 62,
     radius: 5,
     hp: 30,
     hpVariance: 10,
@@ -265,7 +269,7 @@ export const CONFIG = {
     wanderTurnMinSec: 2,
     wanderTurnMaxSec: 5,
     /** 開局喪屍離玩家至少幾多格 */
-    minSpawnTiles: 14,
+    minSpawnTiles: 18,
     sightChecksPerFrame: 20,
     separationSpeed: 60,
     /** 每隻每幀最多同幾多隻隔籬互推（屍群擠埋時慳計算） */
@@ -273,15 +277,15 @@ export const CONFIG = {
     /** 離玩家幾多格以外用粗略模擬（每秒一步、唔碰撞） */
     activeTiles: 22,
     coarseStepSec: 1,
-    attackCooldown: 1.3,
+    attackCooldown: 1.6,
     attackRange: 4,
-    damageMin: 5,
-    damageMax: 10,
+    damageMin: 3,
+    damageMax: 6,
     /** 每次被打中：咬傷、抓傷、割傷（出血）機率 */
-    biteChance: 0.08,
+    biteChance: 0.03,
     scratchChance: 0.25,
-    scratchInfectChance: 0.25,
-    lacerationChance: 0.35,
+    scratchInfectChance: 0.15,
+    lacerationChance: 0.2,
     /** 推跌之後瞓幾耐 */
     downSec: 2.5,
     staggerSec: 0.25,
