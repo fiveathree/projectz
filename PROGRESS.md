@@ -24,9 +24,14 @@
 | WASD / 撞牆 / 鏡頭 / 電筒 | ✅ | 合成按鍵：D 1 秒行 80px；S 行到牆前 5px（= 玩家半徑）停；鏡頭中心跟住玩家；F 切換電筒。 |
 | favicon + og:image | ✅ | 三個檔 HTTP 200，og.png 實測 1200×630。 |
 
+### 部署（2026-11-10）
+- 線上：**https://typhoon-dead.fiveathree.workers.dev**（fiveathree Cloudflare 帳戶）。
+- Cloudflare 已將 Pages 併入 Workers（`wrangler pages project create` 會自動轉去新版），所以用 Workers 靜態資產：`wrangler.jsonc` 只指向 `dist/`，冇伺服器 Code。
+- og:image / twitter:image 已改絕對網址；線上 index、og.png、favicon 全部 200；線上版開到、冇 console 錯誤、每幀平均 2.8ms。
+
 ### 已知問題
 - 測試時瀏覽器面板收埋，`requestAnimationFrame` 被節流，**未量到真實螢幕 FPS**；60fps 係用逐幀計時證明。下次開住面板再睇 HUD 嘅 FPS。
-- **未部署 Cloudflare Pages**（DESIGN.md Phase 0 有寫，但今次任務清單冇要求；部署要另外批准）。部署後要將 og:image 改成絕對網址，社交平台先讀到。
+- 未駁 GitHub 自動部署：而家係本機 `npm run build && npx wrangler deploy` 手動上載。要 push main 自動部署，需要喺 Cloudflare Dashboard → Workers → typhoon-dead → Settings → Builds 連 GitHub repo。
 - 喪屍貼住玩家會同玩家 sprite 少少重疊（Phase 0 冇攻擊，所以冇碰撞）。
 - 視錐邊緣用均勻射線（2°）+ 牆角射線，遠距離邊緣有少少鋸齒。
 - 冇「地形記憶」：視野外地形一律用 90% 黑遮住，未記錄「見過嘅格」。
@@ -34,7 +39,7 @@
 - 字體仲係系統字，俐方體 11 號未加入。
 
 ### 下一步（Phase 1）
-1. 部署 Cloudflare Pages（要你批准），og:image 改絕對網址；開住面板量真實 FPS。
+1. 開住瀏覽器面板量真實 FPS；（可選）Dashboard 駁 GitHub 自動部署。
 2. 4×4 街區北汐區、10 種地點樣板（便利店、藥房、五金舖…）。
 3. 噪音系統（喪屍走去最後聽到嘅位置，流場目標改做聲源）。
 4. 搜刮 + 背包（重量制）+ 快捷欄；近戰 / 推撞 / 踩頭。

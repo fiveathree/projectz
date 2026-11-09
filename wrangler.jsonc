@@ -1,0 +1,6 @@
+// Cloudflare 靜態網站（Pages 已併入 Workers：只上載 dist/，冇伺服器 Code）
+{
+  "name": "typhoon-dead",
+  "compatibility_date": "2026-11-09",
+  "assets": { "directory": "./dist" }
+}
