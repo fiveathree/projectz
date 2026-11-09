@@ -42,8 +42,10 @@ export function castRay(g: Grid, ox: number, oy: number, angle: number, maxDist:
 
 const norm = (a: number) => ((a % TAU) + TAU) % TAU;
 
-/** 計可見多邊形（世界座標點） */
-export function visibilityPolygon(g: Grid, ox: number, oy: number, cone: ViewCone): { x: number; y: number }[] {
+type Pt = { x: number; y: number };
+
+/** 計可見多邊形（世界座標點）；同時出一個截短到 innerRatio 嘅內圈（柔邊用，唔使再射多次） */
+export function visibilityPolygon(g: Grid, ox: number, oy: number, cone: ViewCone, innerRatio = 1): { outer: Pt[]; inner: Pt[] } {
   const full = cone.half >= Math.PI;
   const start = full ? 0 : cone.angle - cone.half;
   const span = full ? TAU : cone.half * 2;
@@ -61,8 +63,13 @@ export function visibilityPolygon(g: Grid, ox: number, oy: number, cone: ViewCon
   const y1 = Math.floor((oy + r) / T);
   for (let ty = y0; ty <= y1 + 1; ty++) {
     for (let tx = x0; tx <= x1 + 1; tx++) {
-      // 格點 (tx,ty) 係牆角：四周四格有不透光
-      if (!(isOpaque(g, tx - 1, ty - 1) || isOpaque(g, tx, ty - 1) || isOpaque(g, tx - 1, ty) || isOpaque(g, tx, ty))) continue;
+      // 格點 (tx,ty) 係真正牆角先射：四格之中 1 或 3 格不透光，或者斜對角兩格（平直牆中間唔使）
+      const a1 = +isOpaque(g, tx - 1, ty - 1);
+      const a2 = +isOpaque(g, tx, ty - 1);
+      const a3 = +isOpaque(g, tx - 1, ty);
+      const a4 = +isOpaque(g, tx, ty);
+      const n = a1 + a2 + a3 + a4;
+      if (n === 0 || n === 4 || (n === 2 && a1 !== a4)) continue;
       const cx = tx * T - ox;
       const cy = ty * T - oy;
       if (cx * cx + cy * cy > r * r) continue;
@@ -75,15 +82,21 @@ export function visibilityPolygon(g: Grid, ox: number, oy: number, cone: ViewCon
   }
 
   rel.sort((p, q) => p - q);
-  const pts: { x: number; y: number }[] = full ? [] : [{ x: ox, y: oy }];
+  const outer: Pt[] = full ? [] : [{ x: ox, y: oy }];
+  const inner: Pt[] = full ? [] : [{ x: ox, y: oy }];
+  const ri = r * innerRatio;
   for (const a of rel) {
     const ang = start + a;
     // 撞牆嗰條射線入牆少少，牆面先會被照亮（canSee 唔加，牆後喪屍照樣見唔到）
     const hit = castRay(g, ox, oy, ang, r);
     const d = hit < r ? Math.min(r, hit + CONFIG.vision.wallBleed) : r;
-    pts.push({ x: ox + Math.cos(ang) * d, y: oy + Math.sin(ang) * d });
+    const cos = Math.cos(ang);
+    const sin = Math.sin(ang);
+    outer.push({ x: ox + cos * d, y: oy + sin * d });
+    const di = Math.min(d, ri);
+    inner.push({ x: ox + cos * di, y: oy + sin * di });
   }
-  return pts;
+  return { outer, inner };
 }
 
 /** 點 (x,y) 喺唔喺任何一個視野來源入面（同多邊形用同一套 Raycast，結果一致） */

@@ -20,8 +20,34 @@
   </head>
   <body>
     <div id="game"></div>
-    <div id="hud" class="overlay"></div>
-    <div id="hint" class="overlay">WASD 移動 · 滑鼠面向 · F 電筒</div>
+    <div id="hud" class="hidden">
+      <div id="clock"></div>
+      <div id="bars"></div>
+      <div id="topbtns">
+        <button data-act="sneak" title="潛行（C）">🥷</button>
+        <button data-act="flash" title="電筒（F）">🔦</button>
+        <button data-act="inv" title="背包（Tab）">🎒</button>
+        <button data-act="map" title="地圖（M）">🗺</button>
+        <button data-act="pause" title="暫停（Esc）">⏸</button>
+      </div>
+    </div>
+    <div id="status" class="hidden"></div>
+    <div id="prompt" class="hidden"></div>
+    <div id="progress" class="hidden"><div></div></div>
+    <div id="hotbar" class="hidden"></div>
+    <div id="toast"></div>
+    <div id="sleep" class="screen hidden">瞓緊覺…<small>有喪屍接近會嘈醒你</small></div>
+    <div id="inv" class="panel hidden"></div>
+    <div id="map" class="panel hidden"><canvas></canvas><p>M 關閉 · 黃色 = 撤離點 · 藍點 = 你</p></div>
+    <div id="touch" class="hidden">
+      <div id="stick"><div></div></div>
+      <button id="t-attack">攻擊</button>
+      <button id="t-shove">推</button>
+      <button id="t-use" class="hidden">互動</button>
+    </div>
+    <div id="daycard" class="screen hidden"></div>
+    <div id="menu" class="screen"></div>
+    <div id="rotate" class="screen">請將手機打橫</div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

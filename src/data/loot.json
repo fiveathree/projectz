@@ -1,0 +1,12 @@
+{
+  "_comment": "地點類型 → 每個容器抽幾多次（rolls）同抽到乜（item: 權重）。空 = 抽空咗",
+  "1": { "name": "便利店", "rolls": [1, 3], "items": { "cupnoodle": 4, "bread": 3, "choc": 3, "water": 4, "lemontea": 4, "soda": 3, "battery": 3, "fishball": 2, "": 3 } },
+  "2": { "name": "藥房", "rolls": [1, 2], "items": { "bandage": 5, "painkiller": 4, "antibiotic": 2, "alcohol": 3, "water": 1, "": 4 } },
+  "3": { "name": "五金舖", "rolls": [1, 2], "items": { "crowbar": 2, "hammer": 3, "pipe": 3, "battery": 3, "backpack": 1, "": 4 } },
+  "4": { "name": "茶餐廳", "rolls": [1, 2], "items": { "knife": 2, "bread": 4, "luncheon": 3, "lemontea": 3, "fishball": 2, "water": 2, "": 3 } },
+  "5": { "name": "街市", "rolls": [1, 3], "items": { "luncheon": 2, "fishball": 3, "bread": 2, "knife": 1, "water": 2, "": 3 } },
+  "6": { "name": "警崗", "rolls": [1, 2], "items": { "baton": 2, "bandage": 3, "battery": 3, "painkiller": 1, "water": 1, "": 3 } },
+  "7": { "name": "唐樓", "rolls": [0, 2], "items": { "cupnoodle": 3, "luncheon": 2, "water": 3, "bat": 1, "mop": 2, "bandage": 2, "battery": 2, "schoolbag": 2, "backpack": 1, "painkiller": 1, "choc": 2, "": 5 } },
+  "8": { "name": "夜市", "rolls": [0, 2], "items": { "fishball": 4, "soda": 3, "lemontea": 3, "choc": 2, "": 4 } },
+  "9": { "name": "碼頭", "rolls": [0, 2], "items": { "pipe": 2, "water": 3, "battery": 1, "luncheon": 2, "": 4 } }
+}

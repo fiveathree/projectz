@@ -1,31 +1,65 @@
-// ASCII 樣板 → 城區格仔（DESIGN.md §6.3）
+// ASCII 樣板 → 北汐區（DESIGN.md §6.3）
 import { CONFIG } from '../config';
-import block1 from './prefabs/block1.txt?raw';
-import block2 from './prefabs/block2.txt?raw';
 
-/** 每個字元：tileset 入面第幾格、擋唔擋路、擋唔擋視線 */
-export const LEGEND: Record<string, { index: number; solid: boolean; opaque: boolean }> = {
-  ',': { index: 0, solid: false, opaque: false }, // 街道
-  '=': { index: 1, solid: false, opaque: false }, // 行人路
-  '.': { index: 2, solid: false, opaque: false }, // 地板
-  '#': { index: 3, solid: true, opaque: true }, // 牆
-  W: { index: 4, solid: true, opaque: false }, // 窗：擋路唔擋視線
-  D: { index: 5, solid: false, opaque: false }, // 門（Phase 0 永遠開住）
-  '~': { index: 6, solid: false, opaque: false }, // 水窪
-  f: { index: 7, solid: true, opaque: false }, // 雪櫃
-  b: { index: 8, solid: true, opaque: false }, // 床
-  k: { index: 9, solid: true, opaque: false }, // 廚櫃
-  r: { index: 10, solid: true, opaque: false }, // 貨架
-  c: { index: 11, solid: true, opaque: false }, // 收銀
-  s: { index: 12, solid: false, opaque: false }, // 梯
-};
-export const TILE_COUNT = 13;
-const BY_INDEX = Object.values(LEGEND).sort((a, b) => a.index - b.index);
+const RAW = import.meta.glob('./prefabs/*.txt', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+
+export interface TileDef {
+  ch: string;
+  solid: boolean;
+  opaque: boolean;
+  /** 容器（可搜刮） */
+  container?: boolean;
+  /** 地板屬於邊種地點（loot.json 嘅 key） */
+  loot?: number;
+}
+
+// 次序 = tileset 入面第幾格（BootScene 跟住畫）
+const DEFS: TileDef[] = [
+  { ch: ',', solid: false, opaque: false }, // 街道
+  { ch: '=', solid: false, opaque: false }, // 行人路
+  { ch: '_', solid: false, opaque: false }, // 騎樓（有蓋行人路）
+  { ch: 'P', solid: true, opaque: true }, // 騎樓柱
+  { ch: '#', solid: true, opaque: true }, // 牆
+  { ch: 'W', solid: true, opaque: false }, // 窗
+  { ch: 'D', solid: true, opaque: true }, // 門（關）
+  { ch: 'O', solid: false, opaque: false }, // 門（開）
+  { ch: 'B', solid: false, opaque: false }, // 門（爛）
+  { ch: '~', solid: false, opaque: false }, // 水窪
+  { ch: 'T', solid: true, opaque: false }, // 水龍頭 / 洗手盆
+  { ch: 'b', solid: true, opaque: false }, // 床
+  { ch: 'f', solid: true, opaque: false, container: true }, // 雪櫃
+  { ch: 'k', solid: true, opaque: false, container: true }, // 廚櫃
+  { ch: 'r', solid: true, opaque: false, container: true }, // 貨架
+  { ch: 'c', solid: true, opaque: false, container: true }, // 收銀機
+  { ch: 'w', solid: true, opaque: false, container: true }, // 衣櫃
+  { ch: 'x', solid: true, opaque: false, container: true }, // 攤檔 / 貨箱
+  { ch: 's', solid: false, opaque: false }, // 樓梯（裝飾）
+  { ch: 't', solid: true, opaque: false }, // 枱
+  { ch: 'A', solid: true, opaque: false }, // 車
+  { ch: 'X', solid: true, opaque: false }, // 警方路障
+  { ch: 'S', solid: true, opaque: false }, // 海
+  { ch: ':', solid: false, opaque: false, loot: 9 }, // 碼頭地
+  { ch: 'E', solid: false, opaque: false }, // 撤離點
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ ch: String(n), solid: false, opaque: false, loot: n })),
+];
+export const TILE_COUNT = DEFS.length;
+export const DEF_BY_INDEX = DEFS;
+const INDEX: Record<string, number> = Object.fromEntries(DEFS.map((d, i) => [d.ch, i]));
+INDEX['.'] = INDEX['7']; // 未標記嘅室內 = 唐樓
+export const tileIndex = (ch: string) => INDEX[ch];
+
+const SOLID = Uint8Array.from(DEFS, (d) => +d.solid);
+const OPAQUE = Uint8Array.from(DEFS, (d) => +d.opaque);
+const DOOR_CLOSED = INDEX['D'];
 
 export interface Grid {
   w: number;
   h: number;
   tiles: Uint8Array;
+  /** 每格容器屬於邊種地點（0 = 唔係容器） */
+  loot: Uint8Array;
+  evac: number[];
+  barricades: number[];
 }
 
 /** mulberry32：有種子嘅 PRNG */
@@ -41,40 +75,113 @@ export function mulberry32(seed: number): () => number {
 }
 
 const parse = (txt: string) => txt.replace(/\r/g, '').split('\n').filter((l) => l.length > 0);
-const PREFABS = [parse(block1), parse(block2)];
+const PREFABS: Record<string, string[]> = Object.fromEntries(
+  Object.entries(RAW).map(([path, txt]) => [path.match(/\/(\w)_/)![1], parse(txt)]),
+);
+/** 16 個街區用邊啲樣板（A 便利店 B 藥房茶餐廳 C 五金 D 街市 E 夜市 F 警崗 G 唐樓） */
+const BLOCK_MIX = 'AABBCCDDEEFGGGGG';
 
 export function generateMap(rand: () => number): Grid {
-  const { blocksX, blocksY, road } = CONFIG.map;
-  const bw = PREFABS[0][0].length;
-  const bh = PREFABS[0].length;
+  const { blocksX, blocksY, road, dockRows, evacWidth } = CONFIG.map;
+  const bw = PREFABS.A[0].length;
+  const bh = PREFABS.A.length;
   const w = road + blocksX * (bw + road);
-  const h = road + blocksY * (bh + road);
-  const tiles = new Uint8Array(w * h).fill(LEGEND[','].index);
+  const cityH = road + blocksY * (bh + road);
+  const h = cityH + dockRows;
+  const tiles = new Uint8Array(w * h).fill(INDEX[',']);
+  const set = (x: number, y: number, ch: string) => (tiles[y * w + x] = INDEX[ch]);
 
+  // 街區：洗牌後逐格放，隨機鏡像
+  const mix = [...BLOCK_MIX];
+  for (let i = mix.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [mix[i], mix[j]] = [mix[j], mix[i]];
+  }
   for (let by = 0; by < blocksY; by++) {
     for (let bx = 0; bx < blocksX; bx++) {
-      let rows = PREFABS[Math.floor(rand() * PREFABS.length)];
+      let rows = PREFABS[mix[by * blocksX + bx]];
       if (rand() < 0.5) rows = rows.map((r) => [...r].reverse().join(''));
-      if (rand() < 0.5) rows = [...rows].reverse();
       const ox = road + bx * (bw + road);
       const oy = road + by * (bh + road);
-      rows.forEach((row, y) => {
+      rows.forEach((row, y) =>
         [...row].forEach((ch, x) => {
-          const def = LEGEND[ch];
-          if (!def) throw new Error(`未知地圖字元「${ch}」`);
-          tiles[(oy + y) * w + ox + x] = def.index;
-        });
-      });
+          if (INDEX[ch] === undefined) throw new Error(`未知地圖字元「${ch}」`);
+          set(ox + x, oy + y, ch);
+        }),
+      );
     }
   }
-  return { w, h, tiles };
+
+  // 碼頭帶：行人路 → 碼頭地（有貨箱）→ 撤離點 → 海
+  const evacX = Math.floor(w / 2 - evacWidth / 2);
+  const evac: number[] = [];
+  for (let y = cityH; y < h; y++) {
+    const r = y - cityH;
+    for (let x = 0; x < w; x++) {
+      if (r < 2) set(x, y, '=');
+      else if (r < dockRows - 4) set(x, y, rand() < 0.03 ? 'x' : ':');
+      else if (r === dockRows - 4) {
+        const isEvac = x >= evacX && x < evacX + evacWidth;
+        set(x, y, isEvac ? 'E' : ':');
+        if (isEvac) evac.push(y * w + x);
+      } else set(x, y, 'S');
+    }
+  }
+
+  // 路邊泊車（橫向兩格），避開十字路口
+  const vRoad = (x: number) => x % (bw + road) < road;
+  let cars = 0;
+  for (let tries = 0; cars < CONFIG.map.cars && tries < 2000; tries++) {
+    const x = Math.floor(rand() * (w - 1));
+    const y = Math.floor(rand() * cityH);
+    const ry = y % (bh + road);
+    if (vRoad(x) || vRoad(x + 1) || (ry !== 0 && ry !== road - 1)) continue; // 橫街貼住路邊
+    if (tiles[y * w + x] !== INDEX[','] || tiles[y * w + x + 1] !== INDEX[',']) continue;
+    set(x, y, 'A');
+    set(x + 1, y, 'A');
+    cars++;
+  }
+
+  // 第 2 日嘅路障：封住中間嗰條直路兩段
+  const barricades: number[] = [];
+  const rx = road + 2 * (bw + road) - road; // 第三條直路
+  for (const by of [1, 2]) {
+    const y = road + by * (bh + road) + Math.floor(bh / 2);
+    for (let x = rx; x < rx + road; x++) barricades.push(y * w + x);
+  }
+
+  // 容器屬於邊種地點：搵最近有標記嘅地板
+  const loot = new Uint8Array(w * h);
+  for (let i = 0; i < tiles.length; i++) {
+    if (!DEFS[tiles[i]].container) continue;
+    const cx = i % w;
+    const cy = (i - cx) / w;
+    let best = 7;
+    let bestD = Infinity;
+    for (let dy = -3; dy <= 3; dy++)
+      for (let dx = -3; dx <= 3; dx++) {
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x < 0 || y < 0 || x >= w || y >= h) continue;
+        const l = DEFS[tiles[y * w + x]].loot;
+        const d = dx * dx + dy * dy;
+        if (l && d < bestD) {
+          bestD = d;
+          best = l;
+        }
+      }
+    loot[i] = best;
+  }
+
+  return { w, h, tiles, loot, evac, barricades };
 }
 
-const at = (g: Grid, x: number, y: number) =>
-  x < 0 || y < 0 || x >= g.w || y >= g.h ? undefined : BY_INDEX[g.tiles[y * g.w + x]];
-
+const inside = (g: Grid, x: number, y: number) => x >= 0 && y >= 0 && x < g.w && y < g.h;
 /** 地圖外當牆 */
-export const isSolid = (g: Grid, x: number, y: number) => at(g, x, y)?.solid ?? true;
-export const isOpaque = (g: Grid, x: number, y: number) => at(g, x, y)?.opaque ?? true;
-
-export const solidIndices = () => BY_INDEX.filter((d) => d.solid).map((d) => d.index);
+export const isSolid = (g: Grid, x: number, y: number) => !inside(g, x, y) || SOLID[g.tiles[y * g.w + x]] === 1;
+export const isOpaque = (g: Grid, x: number, y: number) => !inside(g, x, y) || OPAQUE[g.tiles[y * g.w + x]] === 1;
+/** 喪屍尋路：關住嘅門當行得過（行到門前會撞門） */
+export const zombieBlocked = (g: Grid, x: number, y: number) =>
+  isSolid(g, x, y) && g.tiles[y * g.w + x] !== DOOR_CLOSED;
+export const defAt = (g: Grid, x: number, y: number) => (inside(g, x, y) ? DEFS[g.tiles[y * g.w + x]] : undefined);
+export const solidIndices = () => DEFS.flatMap((d, i) => (d.solid ? [i] : []));
