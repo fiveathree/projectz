@@ -6,3 +6,13 @@
 - 開發守則：[`CLAUDE.md`](./CLAUDE.md)
 
 技術：Phaser + TypeScript + Vite，HTML/CSS UI，IndexedDB 存檔，Cloudflare Pages 部署。
+
+## 開發
+
+```bash
+npm install
+npm run dev     # http://localhost:5173
+npm run build   # 輸出 dist/
+```
+
+重新生成 favicon / og 圖：`powershell -File scripts/make-images.ps1`。進度見 [`PROGRESS.md`](./PROGRESS.md)。

@@ -1,0 +1,21 @@
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* 一個畫面放晒，唔准捲動 */
+  background: #07090d;
+  color: #cfe3ea;
+  font-family: system-ui, "Microsoft JhengHei", "PingFang TC", sans-serif;
+}
+#game { position: fixed; inset: 0; }
+.overlay {
+  position: fixed;
+  left: 0;
+  right: 0;
+  padding: 6px 12px;
+  font-size: 14px;
+  pointer-events: none;
+  text-shadow: 0 1px 2px #000;
+}
+#hud { top: 0; background: linear-gradient(#07090dcc, transparent); }
+#hint { bottom: 0; text-align: center; color: #8a93a6; }
