@@ -5,7 +5,7 @@ import profsJson from './data/professions.json';
 
 export interface ItemDef {
   name: string;
-  kind: 'food' | 'drink' | 'med' | 'battery' | 'weapon' | 'bag';
+  kind: 'food' | 'drink' | 'med' | 'battery' | 'weapon' | 'bag' | 'misc' | 'throw' | 'place' | 'phone' | 'clue';
   weight: number;
   hunger?: number;
   thirst?: number;
@@ -21,6 +21,15 @@ export interface ItemDef {
   durability?: number;
   knockback?: number;
   capacity?: number;
+  /** 幾多遊戲分鐘後變壞 */
+  shelf?: number;
+  /** 生食：煮完變咩 */
+  raw?: string;
+  /** 飲完剩低咩 */
+  empty?: string;
+  curePoison?: boolean;
+  phone?: number;
+  tool?: boolean;
 }
 export interface Profession {
   name: string;
@@ -38,6 +47,9 @@ export interface Profession {
   shoveMul?: number;
   hungerMul?: number;
   start?: string[];
+  skills?: Partial<Skills>;
+  noBurn?: boolean;
+  shelfMul?: number;
 }
 export const ITEMS = itemsJson as Record<string, ItemDef>;
 export const PROFESSIONS = profsJson as Record<string, Profession>;
@@ -46,7 +58,15 @@ export const PROFESSIONS = profsJson as Record<string, Profession>;
 export interface Item {
   id: string;
   dur?: number;
+  /** 幾時變壞（遊戲分鐘） */
+  exp?: number;
+  /** 線索 id */
+  clue?: string;
 }
+
+export type SkillId = 'melee' | 'sneak' | 'aid' | 'carp';
+export type Skills = Record<SkillId, number>;
+export const SKILL_NAMES: Record<SkillId, string> = { melee: '近戰', sneak: '潛行', aid: '急救', carp: '木工' };
 export const makeItem = (id: string): Item => (ITEMS[id].durability ? { id, dur: ITEMS[id].durability } : { id });
 
 export interface PlayerState {
@@ -71,6 +91,20 @@ export interface PlayerState {
   hotbar: (string | null)[];
   kills: number;
   bornAt: number;
+  /** 技能經驗值 */
+  skills: Skills;
+  /** 食物中毒到幾時 */
+  poisonUntil: number;
+  /** 手機電量 */
+  phone: number;
+}
+
+export interface Structure {
+  x: number;
+  y: number;
+  kind: 'collector';
+  /** 雨水收集器：儲咗幾多水 */
+  water: number;
 }
 
 export interface Pile {
@@ -107,6 +141,9 @@ export interface GameState {
   /** 已經觸發咗嘅每日事件 */
   daysStarted: number;
   deaths: number;
+  /** 讀過嘅線索（世界層面：新角色繼承手機筆記） */
+  clues: string[];
+  structures: Structure[];
   ended: null | 'escaped' | 'stayed';
 }
 
@@ -134,6 +171,9 @@ export function newPlayer(prof: string, x: number, y: number, minutes: number): 
     hotbar: [null, null, null, null, null],
     kills: 0,
     bornAt: minutes,
+    skills: { melee: 0, sneak: 0, aid: 0, carp: 0, ...Object.fromEntries(Object.entries(p.skills ?? {}).map(([k, lv]) => [k, CONFIG.skills.levels[lv as number]])) } as Skills,
+    poisonUntil: 0,
+    phone: 100,
   };
 }
 
@@ -153,6 +193,8 @@ export function newGame(seed: number, prof: string): GameState {
     daysStarted: 0,
     deaths: 0,
     ended: null,
+    clues: [],
+    structures: [],
   };
 }
 
@@ -166,6 +208,14 @@ export const staminaMax = (s: GameState) => {
   const base = profOf(s).staminaMax ?? CONFIG.needs.staminaMax;
   return s.player.hunger <= 0 ? base * CONFIG.needs.starveStaminaMul : base;
 };
+
+export const skillLevel = (p: PlayerState, k: SkillId) => {
+  const L = CONFIG.skills.levels;
+  let lv = 0;
+  while (lv + 1 < L.length && p.skills[k] >= L[lv + 1]) lv++;
+  return lv;
+};
+export const isRotten = (it: Item, minutes: number) => it.exp !== undefined && minutes >= it.exp;
 
 /** 時間工具 */
 export const dayOf = (min: number) => Math.floor(min / 1440) + 1;

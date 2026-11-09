@@ -130,6 +130,88 @@ export const CONFIG = {
     /** 走路時每幾秒發一次腳步聲 */
     stepEverySec: 0.5,
     carAlarmSec: 12,
+    glass: 18,
+    hammer: 8,
+    cook: 3,
+    molotov: 10,
+    /** 夜晚電筒照住冇窗簾嘅窗：外面幾多格內嘅喪屍會被光引過嚟 */
+    windowLight: 8,
+    windowLightEverySec: 2,
+  },
+
+  /** 喪屍打爛各種格要幾多「耐久」（打一秒扣 doorBashPerSec） */
+  tileHp: { D: 12, W: 3, C: 3 } as Record<string, number>,
+
+  build: {
+    /** 釘板：耐久、要幾耐、每級木工加幾多 */
+    boardHp: 20,
+    boardSec: 3,
+    perCarpHp: 0.25,
+    perCarpSpeed: 0.15,
+    dismantleSec: 3,
+    /** 拆傢俬得到咩 */
+    dismantle: { t: ['plank', 'plank'], b: ['plank', 'cloth', 'cloth'], w: ['plank', 'cloth'] } as Record<string, string[]>,
+  },
+
+  cook: {
+    sec: 3,
+    /** 非廚師煮燶機率（每級急救冇關，係廚師先 0） */
+    burnChance: 0.2,
+    /** 第幾分鐘斷電（第 5 日 00:00）：雪櫃保鮮到呢個時間 */
+    powerOutMin: 4 * 1440,
+    poisonMin: 240,
+    poisonHpPerMin: 0.06,
+    poisonThirstPerMin: 0.05,
+  },
+
+  throw: {
+    rangeTiles: 6,
+    flightSec: 0.4,
+    radiusTiles: 1.6,
+    burnSec: 10,
+    dps: 18,
+    playerDps: 8,
+  },
+
+  collector: {
+    /** 落雨時每遊戲分鐘儲幾多（100 = 一樽） */
+    rainPerMin: 0.8,
+    stormPerMin: 2,
+    capacity: 400,
+  },
+
+  phone: {
+    /** 斷電後待機每遊戲分鐘耗幾多 %；開住再加 */
+    idlePerMin: 100 / (2.5 * 1440),
+    openPerMin: 100 / (8 * 60),
+  },
+
+  skills: {
+    /** 升到第 n 級要幾多經驗 */
+    levels: [0, 20, 60, 130, 230, 360],
+    xp: { meleeHit: 2, sneakSec: 0.2, aid: 6, carp: 8, craft: 4 },
+    /** 每級效果 */
+    meleeDmg: 0.1,
+    meleeStamina: 0.08,
+    sneakNoise: 0.12,
+    sneakSight: 0.07,
+    aidHeal: 0.2,
+  },
+
+  /** 每日調色（ColorMatrix）：飽和度、亮度、對比、藍調 */
+  grade: {
+    clear: { sat: -0.15, bright: 1.03, contrast: 0.05, blue: 0 },
+    cloudy: { sat: -0.3, bright: 0.97, contrast: 0, blue: 0.04 },
+    rain: { sat: -0.35, bright: 0.94, contrast: -0.05, blue: 0.08 },
+    storm: { sat: -0.5, bright: 0.88, contrast: -0.15, blue: 0.14 },
+    blackout: { sat: -0.6, bright: 0.85, contrast: 0.1, blue: 0.06 },
+  } as Record<string, { sat: number; bright: number; contrast: number; blue: number }>,
+
+  audio: {
+    /** 預設音量（0–1）；暫停選單可以改 */
+    volume: 0.6,
+    groanEverySec: 3,
+    groanTiles: 10,
   },
 
   zombie: {
@@ -235,7 +317,7 @@ export const CONFIG = {
 
   save: {
     key: 'typhoon-dead-save',
-    version: 1,
+    version: 2,
     /** 每幾遊戲分鐘自動存檔 */
     everyMin: 60,
     maxBlood: 400,

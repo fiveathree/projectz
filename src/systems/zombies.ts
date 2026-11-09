@@ -2,7 +2,7 @@
 // 全部喪屍共用流場；遠離玩家嘅用粗略模擬（每秒一步、唔碰撞）
 import * as Phaser from 'phaser';
 import { CONFIG } from '../config';
-import { type Grid, isSolid, tileIndex, zombieBlocked } from '../world/mapgen';
+import { type Grid, isBashable, isSolid, zombieBlocked } from '../world/mapgen';
 import { castRay } from '../world/vision';
 import type { Item, ZombieSave } from '../state';
 
@@ -12,7 +12,6 @@ const DIRS = [
   [1, 0], [-1, 0], [0, 1], [0, -1],
   [1, 1], [1, -1], [-1, 1], [-1, -1],
 ];
-const DOOR_CLOSED = tileIndex('D');
 const PAST_SELF_TINT = 0x9fb8ff;
 
 /** 流場：由目標格 BFS 出嚟嘅距離表 */
@@ -103,7 +102,8 @@ export interface ZWorld {
   grid: Grid;
   /** 改過格就 +1，流場會重算 */
   tilesVersion: number;
-  bashDoor(tile: number, amount: number): void;
+  /** 撞門 / 打窗 / 打板 */
+  bashTile(tile: number, amount: number): void;
   onAttack(z: Zombie): void;
 }
 
@@ -121,7 +121,9 @@ export class Zombies {
   }
 
   spawn(x: number, y: number, hp?: number, carry?: Item[]): Zombie {
-    const s = this.group.create(x, y, 'zombie') as ZSprite;
+    const v = Math.floor(this.rand() * 3); // 3 款喪屍
+    const s = this.group.create(x, y, 'zombie', v * 2) as ZSprite;
+    s.play({ key: `z${v}-walk`, startFrame: Math.floor(this.rand() * 2) });
     s.setDepth(10).setCircle(Z.radius, s.width / 2 - Z.radius, s.height / 2 - Z.radius).setCollideWorldBounds(true);
     if (carry) s.setTint(PAST_SELF_TINT); // 上一輪嘅你
     const z: Zombie = {
@@ -296,7 +298,15 @@ export class Zombies {
       const ty = Math.floor(s.y / T);
       if (z.mode === 'chase') {
         const near = Math.abs(tx - ptx) <= 1 && Math.abs(ty - pty) <= 1;
-        if (near) this.aim(z, Math.atan2(py - s.y, px - s.x), Z.chaseSpeed);
+        if (near) {
+          this.aim(z, Math.atan2(py - s.y, px - s.x), Z.chaseSpeed);
+          // 你喺窗 / 門後面：打爛佢
+          const b = s.body.blocked;
+          if (b.left || b.right || b.up || b.down) {
+            const nt = (ty + Math.sign(pty - ty)) * g.w + tx + Math.sign(ptx - tx);
+            if (isBashable(g, nt)) this.w.bashTile(nt, Z.doorBashPerSec * dt);
+          }
+        }
         else this.follow(z, this.playerFlow, tx, ty, dt);
         if (dist <= Z.radius + pr + Z.attackRange && z.attackCd <= 0 && z.stagger <= 0) {
           z.attackCd = Z.attackCooldown;
@@ -330,7 +340,7 @@ export class Zombies {
     }
     const nx = ni % g.w;
     const ny = (ni - nx) / g.w;
-    if (g.tiles[ni] === DOOR_CLOSED) this.w.bashDoor(ni, Z.doorBashPerSec * dt);
+    if (isBashable(g, ni)) this.w.bashTile(ni, Z.doorBashPerSec * dt);
     const speed = z.mode === 'chase' ? Z.chaseSpeed : Z.wanderSpeed * 1.4;
     this.aim(z, Math.atan2((ny + 0.5) * T - z.sprite.y, (nx + 0.5) * T - z.sprite.x), speed);
   }
@@ -358,8 +368,8 @@ export class Zombies {
         ni = isSolid(g, tx + dx, ty + dy) ? -1 : (ty + dy) * g.w + tx + dx;
       }
       if (ni < 0) break;
-      if (g.tiles[ni] === DOOR_CLOSED) {
-        this.w.bashDoor(ni, Z.doorBashPerSec * Z.coarseStepSec);
+      if (isBashable(g, ni)) {
+        this.w.bashTile(ni, Z.doorBashPerSec * Z.coarseStepSec);
         break;
       }
       tx = ni % g.w;

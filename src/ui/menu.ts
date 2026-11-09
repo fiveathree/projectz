@@ -1,5 +1,6 @@
 // 全畫面：標題、揀職業、日卡、死亡、結局、暫停（純 DOM）
 import { PROFESSIONS } from '../state';
+import { getVolume, setVolume } from '../systems/audio';
 
 const menu = document.getElementById('menu')!;
 const card = document.getElementById('daycard')!;
@@ -17,7 +18,7 @@ const bind = (handlers: Record<string, () => void>) => {
   }
 };
 
-const KEYS = 'WASD 移動 · 滑鼠面向 · 左鍵攻擊 · Space 推撞 · Shift 跑 · C 潛行 · E 互動 · Tab 背包 · M 地圖 · F 電筒 · 1–5 快捷欄 · Esc 暫停';
+const KEYS = 'WASD 移動 · 滑鼠面向 · 左鍵攻擊（打窗）· Space 推撞 · Shift 跑 · C 潛行 · E 互動 · R 釘板 / 拆 · G 掟燃燒樽 · Tab 背包 / 製作 · P 手機 · M 地圖 · F 電筒 · 1–5 快捷欄 · Esc 暫停';
 
 export function showTitle(hasSave: boolean, onContinue: () => void, onNew: () => void) {
   open(`
@@ -68,6 +69,9 @@ export function showEnding(title: string, text: string, buttons: Record<string, 
 }
 
 export function showPause(onResume: () => void, onQuit: () => void) {
-  open(`<h1>暫停</h1><p class="keys">${KEYS}</p><div class="row"><button data-b="go">繼續</button><button data-b="quit">存檔並返回標題</button></div>`);
+  open(`<h1>暫停</h1><p class="keys">${KEYS}</p>
+    <label class="vol">🔊 音量 <input type="range" min="0" max="100" value="${Math.round(getVolume() * 100)}" /></label>
+    <div class="row"><button data-b="go">繼續</button><button data-b="quit">存檔並返回標題</button></div>`);
+  menu.querySelector<HTMLInputElement>('input[type=range]')!.oninput = (e) => setVolume(Number((e.target as HTMLInputElement).value) / 100);
   bind({ go: onResume, quit: onQuit });
 }

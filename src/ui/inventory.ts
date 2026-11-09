@@ -1,5 +1,5 @@
 // 背包（DESIGN.md §3.6）：重量制、兩欄（身上 / 地上或容器）、點擊或原生拖放
-import { ITEMS, type Item } from '../state';
+import { ITEMS, type Item, isRotten } from '../state';
 
 export interface InvView {
   body: Item[];
@@ -9,6 +9,8 @@ export interface InvView {
   cap: number;
   other: Item[];
   otherName: string;
+  minutes: number;
+  recipes: { id: string; name: string; needs: string; ok: boolean; help: string }[];
 }
 export interface InvActions {
   use(i: number): void;
@@ -16,17 +18,22 @@ export interface InvActions {
   take(j: number): void;
   takeAll(): void;
   unequip(slot: 'weapon' | 'bag'): void;
+  craft(id: string): void;
 }
 
 const el = document.getElementById('inv')!;
 let view: (() => InvView) | null = null;
 let actions: InvActions | null = null;
+let tab: 'bag' | 'craft' = 'bag';
 
-const USE_LABEL: Record<string, string> = { food: '食', drink: '飲', med: '用', battery: '換', weapon: '拎', bag: '揹' };
+const USE_LABEL: Record<string, string> = { food: '食', drink: '飲', med: '用', battery: '換', weapon: '拎', bag: '揹', phone: '叉', throw: '掟', place: '放', misc: '睇' };
+let now = 0;
 const desc = (it: Item) => {
   const d = ITEMS[it.id];
   const dur = it.dur !== undefined && d.durability ? ` ${Math.round((it.dur / d.durability) * 100)}%` : '';
-  return `${d.name}<em> ${d.weight}kg${dur}</em>`;
+  const rot = isRotten(it, now) ? ' <b style="color:var(--red)">變壞</b>' : it.exp !== undefined && it.exp - now < 360 ? ' <b style="color:var(--gold)">就壞</b>' : '';
+  const raw = d.raw ? ' <b style="color:var(--gold)">生</b>' : '';
+  return `${d.name}${raw}${rot}<em> ${d.weight}kg${dur}</em>`;
 };
 
 export const inventoryOpen = () => view !== null;
@@ -47,8 +54,14 @@ export function refreshInventory() {
   if (!view || !actions) return;
   const v = view();
   const a = actions;
+  now = v.minutes;
   const over = v.weight > v.cap;
-  el.innerHTML = `
+  const tabs = `<div class="tabs"><button data-tab="bag" class="${tab === 'bag' ? 'on' : ''}">背包</button><button data-tab="craft" class="${tab === 'craft' ? 'on' : ''}">製作</button></div>`;
+  if (tab === 'craft') {
+    el.innerHTML = `${tabs}<div class="craft">${v.recipes
+      .map((r) => `<div class="row"><span><b>${r.name}</b> <em>${r.needs}</em> <span class="info" tabindex="0">ⓘ<span class="pop">${r.help}</span></span></span><button data-craft="${r.id}" ${r.ok ? '' : 'disabled style="opacity:.4"'}>製作</button></div>`)
+      .join('')}</div>`;
+  } else el.innerHTML = `${tabs}
     <div class="col">
       <h3>身上 <span style="color:${over ? 'var(--red)' : 'inherit'}">${v.weight.toFixed(1)} / ${v.cap.toFixed(1)} kg</span></h3>
       <div class="slots">
@@ -72,7 +85,9 @@ export function refreshInventory() {
   el.querySelectorAll<HTMLButtonElement>('button').forEach((b) => {
     b.onclick = () => {
       const d = b.dataset;
-      if (d.use) a.use(+d.use);
+      if (d.tab) tab = d.tab as 'bag' | 'craft';
+      else if (d.craft) a.craft(d.craft);
+      else if (d.use) a.use(+d.use);
       else if (d.drop) a.drop(+d.drop);
       else if (d.take) a.take(+d.take);
       else if (d.all) a.takeAll();

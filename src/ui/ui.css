@@ -1,3 +1,9 @@
+/* 俐方體 11 號（OFL）— 繁中像素字 */
+@font-face {
+  font-family: "Cubic11";
+  src: url("/fonts/cubic11.woff2") format("woff2");
+  font-display: swap;
+}
 :root {
   --ink: #07090d;
   --panel: #0d1118ee;
@@ -16,7 +22,7 @@ html, body {
   overflow: hidden; /* 一個畫面放晒，唔准捲動 */
   background: var(--ink);
   color: var(--text);
-  font-family: system-ui, "Microsoft JhengHei", "PingFang TC", sans-serif;
+  font-family: "Cubic11", system-ui, "Microsoft JhengHei", "PingFang TC", sans-serif;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
@@ -88,8 +94,38 @@ button:hover { border-color: var(--cyan); }
 #inv .slots div { flex: 1; border: 1px dashed var(--line); border-radius: 4px; padding: 4px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 4px; }
 #inv .foot { color: var(--dim); font-size: 11px; margin-top: 4px; }
 #inv .empty { color: var(--dim); padding: 8px; }
-#map canvas { display: block; image-rendering: pixelated; max-width: calc(100vw - 40px); max-height: calc(100vh - 70px); }
-#map p { margin: 6px 0 0; font-size: 12px; color: var(--dim); text-align: center; }
+/* 背包分頁（固定位置） */
+#inv { grid-template-rows: auto 1fr; }
+#inv .tabs { grid-column: 1 / -1; display: flex; gap: 6px; }
+#inv .tabs button { width: 96px; padding: 3px 0; }
+#inv .tabs button.on, .ph-tabs button.on { border-color: var(--gold); background: #3a3010; }
+#inv .craft { grid-column: 1 / -1; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; padding: 6px; }
+#inv .craft .row { cursor: default; }
+
+/* 手機：固定大小，分頁掣永遠喺底同一位置 */
+#phone { width: 440px; height: min(620px, calc(100vh - 16px)); display: flex; flex-direction: column; padding: 8px; border-radius: 22px; border: 3px solid #2b3240; }
+.ph-top { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); padding: 0 10px 6px; flex: none; }
+.ph-body { flex: 1; min-height: 0; position: relative; background: #05070b; border-radius: 10px; overflow: hidden; }
+.ph-body > div[data-tab] { position: absolute; inset: 0; overflow-y: auto; padding: 10px; font-size: 13px; line-height: 1.6; }
+.ph-body > div[data-tab="map"] { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 6px; }
+.ph-body canvas { display: block; image-rendering: pixelated; max-width: 100%; max-height: calc(100% - 24px); }
+.ph-body p { margin: 4px 0 0; font-size: 11px; color: var(--dim); text-align: center; }
+.ph-body.off > div[data-tab] { visibility: hidden; }
+.ph-dead { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 20px; }
+.ph-tabs { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding-top: 8px; }
+.ph-tabs button { padding: 6px 0; }
+.note { border-bottom: 1px solid #ffffff12; padding: 6px 0; }
+.note b { color: var(--cyan); }
+.note.locked { color: #444b58; }
+.skill { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.skill i { flex: 1; height: 6px; background: #ffffff1a; border-radius: 3px; overflow: hidden; }
+.skill i b { display: block; height: 100%; background: var(--cyan); }
+
+/* ⓘ 說明彈窗（hover 或者點開） */
+.info { position: relative; display: inline-block; color: var(--cyan); cursor: help; outline: none; }
+.info .pop { display: none; position: absolute; z-index: 5; right: 0; top: 1.4em; width: 240px; background: #0d1118; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; color: var(--text); font-size: 12px; line-height: 1.5; white-space: normal; }
+.info:hover .pop, .info:focus .pop { display: block; }
+.vol { display: flex; align-items: center; gap: 8px; color: var(--dim); }
 
 /* 全畫面：標題、日卡、死亡、結局 */
 .screen {
@@ -123,6 +159,8 @@ button:hover { border-color: var(--cyan); }
 #t-attack { right: 24px; bottom: 28px; width: 84px !important; height: 84px !important; border-color: var(--red) !important; }
 #t-shove { right: 120px; bottom: 20px; }
 #t-use { right: 36px; bottom: 124px; border-color: var(--gold) !important; }
+#t-act2 { right: 120px; bottom: 104px; border-color: var(--cyan) !important; font-size: 13px !important; }
+#t-throw { right: 204px; bottom: 30px; border-color: var(--red) !important; }
 
 @media (pointer: coarse) {
   #hud { font-size: 11px; gap: 8px; padding: 4px 8px; }
@@ -130,7 +168,10 @@ button:hover { border-color: var(--cyan); }
   .bar i { width: 30px; }
   #topbtns button { font-size: 18px; padding: 4px 9px; }
   #hotbar div { width: 50px; height: 34px; font-size: 10px; }
-  #status, #prompt { bottom: 150px; }
+  /* 手機：提示同狀態放上面，唔好遮住右下嘅掣 */
+  #prompt { bottom: auto; top: 54px; right: 12px; white-space: nowrap; }
+  #status { bottom: auto; top: 54px; left: 8px; }
+  #bars { gap: 6px; }
   .profs { grid-template-columns: repeat(3, minmax(110px, 1fr)); }
 }
 @media (pointer: coarse) and (orientation: portrait) {

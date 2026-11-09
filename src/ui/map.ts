@@ -1,30 +1,23 @@
-// 地圖（M）：只畫見過嘅格；的士司機一開始全區已知
+// 地圖（手機分頁）：只畫見過嘅格；的士司機一開始全區已知
 import { PALETTE as P } from '../config';
 import { DEF_BY_INDEX, type Grid } from '../world/mapgen';
 
-const panel = document.getElementById('map')!;
-const canvas = panel.querySelector('canvas')!;
 const SCALE = 4;
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
 
 const colorOf = (ch: string) => {
-  if (ch === '#' || ch === 'P' || ch === 'D') return hex(P.wallTop);
-  if (ch === 'W') return hex(P.glass);
+  if ('#PDHJCK'.includes(ch)) return hex(P.wallTop);
+  if (ch === 'W' || ch === 'V') return hex(P.glass);
   if (ch === 'S') return hex(P.sea);
   if (ch === 'E') return '#e0c040';
   if (ch === ',' || ch === '~') return hex(P.asphalt);
   if (ch === 'A' || ch === 'X') return hex(P.neonRed);
   if (ch === '=' || ch === '_' || ch === ':') return hex(P.sidewalk);
-  if ('fkrcwxbTt'.includes(ch)) return hex(P.wood);
+  if ('fkrcwxbTtG'.includes(ch)) return hex(P.wood);
   return hex(P.floor);
 };
 
-export const mapOpen = () => !panel.classList.contains('hidden');
-export function toggleMap(on: boolean) {
-  panel.classList.toggle('hidden', !on);
-}
-
-export function drawMap(g: Grid, explored: Uint8Array, px: number, py: number, marks: { x: number; y: number; color: string }[]) {
+export function drawMap(canvas: HTMLCanvasElement, g: Grid, explored: Uint8Array, px: number, py: number, marks: { x: number; y: number; color: string }[]) {
   canvas.width = g.w * SCALE;
   canvas.height = g.h * SCALE;
   const c = canvas.getContext('2d')!;
@@ -42,10 +35,10 @@ export function drawMap(g: Grid, explored: Uint8Array, px: number, py: number, m
   for (const t of g.evac) c.fillRect((t % g.w) * SCALE, Math.floor(t / g.w) * SCALE, SCALE, SCALE);
   for (const m of marks) {
     c.fillStyle = m.color;
-    c.fillRect(m.x * SCALE - 3, m.y * SCALE - 3, 6, 6);
+    c.fillRect(m.x * SCALE - 4, m.y * SCALE - 4, 8, 8);
   }
   c.fillStyle = '#39d0d8';
   c.beginPath();
-  c.arc(px * SCALE, py * SCALE, 5, 0, Math.PI * 2);
+  c.arc(px * SCALE, py * SCALE, 6, 0, Math.PI * 2);
   c.fill();
 }

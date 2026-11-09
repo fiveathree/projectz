@@ -1,8 +1,80 @@
 {
-  "taxi": { "name": "的士司機", "pro": "熟路：地圖一開始已顯示全區", "con": "體力差", "staminaMax": 75, "mapRevealed": true },
-  "nurse": { "name": "護士", "pro": "治療效果 ×2", "con": "近戰弱", "healMul": 2, "damageMul": 0.75, "start": ["bandage", "bandage", "antibiotic"] },
-  "cook": { "name": "茶餐廳廚師", "pro": "食物效果 ×1.3、開局有菜刀", "con": "—", "foodMul": 1.3, "start": ["knife", "bread"] },
-  "worker": { "name": "地盤工人", "pro": "負重 +30%、開局有錘仔", "con": "跑步噪音大", "capacityMul": 1.3, "runNoiseMul": 1.5, "start": ["hammer"] },
-  "clerk": { "name": "便利店夜班", "pro": "夜視較好、唔易驚", "con": "力弱", "nightVision": 2, "panicMul": 0.5, "damageMul": 0.8, "start": ["choc", "battery"] },
-  "guard": { "name": "保安員", "pro": "開局有警棍、推撞強", "con": "肚餓快", "shoveMul": 1.6, "hungerMul": 1.35, "start": ["baton"] }
+  "taxi": {
+    "name": "的士司機",
+    "pro": "熟路：地圖一開始已顯示全區",
+    "con": "體力差",
+    "staminaMax": 75,
+    "mapRevealed": true
+  },
+  "nurse": {
+    "name": "護士",
+    "pro": "治療效果 ×2、急救 Lv2",
+    "con": "近戰弱",
+    "healMul": 2,
+    "damageMul": 0.75,
+    "start": [
+      "bandage",
+      "bandage",
+      "antibiotic"
+    ],
+    "skills": {
+      "aid": 2
+    }
+  },
+  "cook": {
+    "name": "茶餐廳廚師",
+    "pro": "煮食唔會燶、食物腐爛慢、食物效果 ×1.3、開局有菜刀",
+    "con": "—",
+    "foodMul": 1.3,
+    "start": [
+      "knife",
+      "rice",
+      "rawwings"
+    ],
+    "noBurn": true,
+    "shelfMul": 1.5
+  },
+  "worker": {
+    "name": "地盤工人",
+    "pro": "負重 +30%、木工 Lv2、開局有錘仔同釘",
+    "con": "跑步噪音大",
+    "capacityMul": 1.3,
+    "runNoiseMul": 1.5,
+    "start": [
+      "hammer",
+      "nails",
+      "plank"
+    ],
+    "skills": {
+      "carp": 2
+    }
+  },
+  "clerk": {
+    "name": "便利店夜班",
+    "pro": "夜視較好、唔易驚、潛行 Lv2",
+    "con": "力弱",
+    "nightVision": 2,
+    "panicMul": 0.5,
+    "damageMul": 0.8,
+    "start": [
+      "choc",
+      "battery"
+    ],
+    "skills": {
+      "sneak": 2
+    }
+  },
+  "guard": {
+    "name": "保安員",
+    "pro": "開局有警棍、推撞強、近戰 Lv1",
+    "con": "肚餓快",
+    "shoveMul": 1.6,
+    "hungerMul": 1.35,
+    "start": [
+      "baton"
+    ],
+    "skills": {
+      "melee": 1
+    }
+  }
 }

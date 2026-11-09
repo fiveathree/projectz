@@ -1,5 +1,6 @@
 // ASCII 樣板 → 北汐區（DESIGN.md §6.3）
 import { CONFIG } from '../config';
+import story from '../data/story.json';
 
 const RAW = import.meta.glob('./prefabs/*.txt', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 
@@ -40,6 +41,12 @@ const DEFS: TileDef[] = [
   { ch: 'S', solid: true, opaque: false }, // 海
   { ch: ':', solid: false, opaque: false, loot: 9 }, // 碼頭地
   { ch: 'E', solid: false, opaque: false }, // 撤離點
+  { ch: 'C', solid: true, opaque: true }, // 拉咗窗簾嘅窗
+  { ch: 'H', solid: true, opaque: true }, // 釘咗板嘅窗
+  { ch: 'J', solid: true, opaque: true }, // 釘咗板嘅門
+  { ch: 'V', solid: false, opaque: false }, // 爛窗（爬得過）
+  { ch: 'G', solid: true, opaque: false }, // 煤氣爐
+  { ch: 'K', solid: true, opaque: true }, // 凍倉鎖住嘅鐵門
   ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ ch: String(n), solid: false, opaque: false, loot: n })),
 ];
 export const TILE_COUNT = DEFS.length;
@@ -50,7 +57,9 @@ export const tileIndex = (ch: string) => INDEX[ch];
 
 const SOLID = Uint8Array.from(DEFS, (d) => +d.solid);
 const OPAQUE = Uint8Array.from(DEFS, (d) => +d.opaque);
-const DOOR_CLOSED = INDEX['D'];
+/** 喪屍打得爛嘅格：打爛之後變咩 */
+export const BREAKS_TO: Record<string, string> = { D: 'B', W: 'V', C: 'V', H: 'V', J: 'B' };
+const BASHABLE = Uint8Array.from(DEFS, (d) => +(d.ch in BREAKS_TO));
 
 export interface Grid {
   w: number;
@@ -60,6 +69,10 @@ export interface Grid {
   loot: Uint8Array;
   evac: number[];
   barricades: number[];
+  /** 線索放咗喺邊個容器：格 → 線索 id */
+  clues: Record<number, string>;
+  /** 凍倉入面放樣本嘅雪櫃 */
+  sampleTile: number;
 }
 
 /** mulberry32：有種子嘅 PRNG */
@@ -128,6 +141,16 @@ export function generateMap(rand: () => number): Grid {
     }
   }
 
+  // 北汐三號凍倉：碼頭東面一間鎖住嘅貨倉，最入面個雪櫃有樣本
+  const cs = { x: Math.floor(w * 0.72), y: cityH + 2, w: 12, h: 5 };
+  for (let y = cs.y; y < cs.y + cs.h; y++)
+    for (let x = cs.x; x < cs.x + cs.w; x++) {
+      const edge = y === cs.y || y === cs.y + cs.h - 1 || x === cs.x || x === cs.x + cs.w - 1;
+      set(x, y, edge ? '#' : y === cs.y + 1 && x > cs.x + 1 && x < cs.x + cs.w - 2 ? 'f' : '9');
+    }
+  set(cs.x + Math.floor(cs.w / 2), cs.y + cs.h - 1, 'K');
+  const sampleTile = (cs.y + 1) * w + cs.x + cs.w - 3;
+
   // 路邊泊車（橫向兩格），避開十字路口
   const vRoad = (x: number) => x % (bw + road) < road;
   let cars = 0;
@@ -173,15 +196,23 @@ export function generateMap(rand: () => number): Grid {
     loot[i] = best;
   }
 
-  return { w, h, tiles, loot, evac, barricades };
+  // 線索：每件放喺對應地點類型嘅一個容器（按種子）
+  const clues: Record<number, string> = {};
+  for (const c of story.clues) {
+    const pool: number[] = [];
+    for (let i = 0; i < tiles.length; i++) if (loot[i] === c.loc && !clues[i] && i !== sampleTile) pool.push(i);
+    if (pool.length) clues[pool[Math.floor(rand() * pool.length)]] = c.id;
+  }
+
+  return { w, h, tiles, loot, evac, barricades, clues, sampleTile };
 }
 
 const inside = (g: Grid, x: number, y: number) => x >= 0 && y >= 0 && x < g.w && y < g.h;
 /** 地圖外當牆 */
 export const isSolid = (g: Grid, x: number, y: number) => !inside(g, x, y) || SOLID[g.tiles[y * g.w + x]] === 1;
 export const isOpaque = (g: Grid, x: number, y: number) => !inside(g, x, y) || OPAQUE[g.tiles[y * g.w + x]] === 1;
-/** 喪屍尋路：關住嘅門當行得過（行到門前會撞門） */
-export const zombieBlocked = (g: Grid, x: number, y: number) =>
-  isSolid(g, x, y) && g.tiles[y * g.w + x] !== DOOR_CLOSED;
+/** 喪屍尋路：門、窗、釘板當行得過（行到面前會打爛佢） */
+export const zombieBlocked = (g: Grid, x: number, y: number) => isSolid(g, x, y) && BASHABLE[g.tiles[y * g.w + x]] !== 1;
+export const isBashable = (g: Grid, i: number) => BASHABLE[g.tiles[i]] === 1;
 export const defAt = (g: Grid, x: number, y: number) => (inside(g, x, y) ? DEFS[g.tiles[y * g.w + x]] : undefined);
 export const solidIndices = () => DEFS.flatMap((d, i) => (d.solid ? [i] : []));

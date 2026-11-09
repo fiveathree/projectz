@@ -11,6 +11,8 @@ export interface NeedsCtx {
   zombiesNear: number;
   dark: boolean;
   flashlight: boolean;
+  phoneOpen: boolean;
+  powerOn: boolean;
 }
 
 /** 返回死因（未死 = null） */
@@ -29,6 +31,11 @@ export function tickNeeds(s: GameState, dtSec: number, dtMin: number, ctx: Needs
     p.hp -= N.dehydrateHpPerMin * dtMin;
     cause = '渴死';
   }
+  if (p.poisonUntil > s.minutes) {
+    p.hp -= CONFIG.cook.poisonHpPerMin * dtMin;
+    p.thirst = clamp(p.thirst - CONFIG.cook.poisonThirstPerMin * dtMin);
+    cause = '食物中毒';
+  }
   if (p.bleeding) {
     p.hp -= N.bleedHpPerSec * dtSec;
     cause = '失血過多';
@@ -42,7 +49,7 @@ export function tickNeeds(s: GameState, dtSec: number, dtMin: number, ctx: Needs
       p.hp = cap;
       cause = '潮病發作';
     }
-  } else if (!p.bleeding && p.hunger > N.regenNeedsAbove && p.thirst > N.regenNeedsAbove) {
+  } else if (!p.bleeding && p.poisonUntil <= s.minutes && p.hunger > N.regenNeedsAbove && p.thirst > N.regenNeedsAbove) {
     p.hp += N.regenHpPerMin * dtMin;
   }
   p.hp = clamp(p.hp, 0, N.hpMax);
@@ -54,6 +61,10 @@ export function tickNeeds(s: GameState, dtSec: number, dtMin: number, ctx: Needs
   p.panic = clamp(p.panic + (panicUp > 0 ? panicUp : -N.panicDecayPerSec) * dtSec);
 
   if (ctx.flashlight) p.battery = clamp(p.battery - N.flashDrainPerSec * dtSec);
+  // 手機：有電嗰陣當一直叉緊電；斷電後慢慢冇電，開住耗得快
+  const PH = CONFIG.phone;
+  if (ctx.powerOn) p.phone = 100;
+  else p.phone = clamp(p.phone - (PH.idlePerMin + (ctx.phoneOpen ? PH.openPerMin : 0)) * dtMin);
   return p.hp <= 0 ? cause ?? '傷重' : null;
 }
 
@@ -61,6 +72,7 @@ export function statusList(s: GameState): string[] {
   const p = s.player;
   const out: string[] = [];
   if (p.bleeding) out.push('🩸 出血');
+  if (p.poisonUntil > s.minutes) out.push('🤢 中毒');
   if (p.infectAt !== null && s.minutes - p.infectAt > N.feverShowMin) out.push('🤒 發燒');
   if (p.bitten) out.push('🦷 咬傷');
   if (p.hunger <= 15) out.push('🍜 好肚餓');

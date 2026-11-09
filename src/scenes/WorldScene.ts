@@ -1,20 +1,27 @@
-// 主遊戲（Phase 1 可玩核心）
+// 主遊戲（Phase 2：安全屋、製作煮食、技能、手機、線索、音效、調色）
 import * as Phaser from 'phaser';
 import { CONFIG } from '../config';
-import { DEF_BY_INDEX, defAt, generateMap, type Grid, isSolid, mulberry32, solidIndices, tileIndex } from '../world/mapgen';
-import { canSee, type ViewCone, visibilityPolygon } from '../world/vision';
+import story from '../data/story.json';
+import { BREAKS_TO, DEF_BY_INDEX, defAt, generateMap, type Grid, isSolid, mulberry32, solidIndices, tileIndex } from '../world/mapgen';
+import { canSee, castRay, type ViewCone, visibilityPolygon } from '../world/vision';
 import { type Zombie, Zombies, type ZWorld } from '../systems/zombies';
-import { coneTiles, darkness, dayInfo, isNight, isStorm, MIN_PER_SEC, nightness, waterOn, weatherOf } from '../systems/time';
+import { coneTiles, darkness, dayInfo, isNight, isStorm, MIN_PER_SEC, nightness, powerOn, waterOn, weatherOf } from '../systems/time';
 import { statusList, tickNeeds } from '../systems/needs';
-import { autoHotbar, dropItem, takeItem, unequip, useHotbar, useItem } from '../systems/inventory';
+import {
+  autoHotbar, canCraft, consume, cookAll, countOf, craft, dropItem, fillBottles, PLACE, RECIPES, takeItem, unequip, useHotbar, useItem,
+} from '../systems/inventory';
 import { rollContainer } from '../systems/loot';
 import { b64ToBits, bitsToB64, deleteSave, saveGame } from '../systems/save';
+import { carpHpMul, carpTimeMul, gainXp, meleeDamageMul, meleeStaminaMul, SKILL_HELP, sneakNoiseMul, sneakSightMul } from '../systems/skills';
+import { play, setLoop } from '../systems/audio';
 import {
-  capacity, carried, clock, dayOf, deadline, type GameState, hourOf, ITEMS, type Item, newPlayer, type Pile, profOf, staminaMax,
+  capacity, carried, clock, dayOf, deadline, type GameState, hourOf, ITEMS, type Item, makeItem, newPlayer, type Pile, profOf,
+  SKILL_NAMES, type SkillId, skillLevel, staminaMax, type Structure,
 } from '../state';
 import { renderHotbar, renderHud, setProgress, setPrompt, showHud, toast } from '../ui/hud';
 import { closeInventory, inventoryOpen, openInventory, refreshInventory } from '../ui/inventory';
-import { drawMap, mapOpen, toggleMap } from '../ui/map';
+import { drawMap } from '../ui/map';
+import { closePhone, openPhone, phoneCanvas, phoneOpen, phoneTab, renderPhone } from '../ui/phone';
 import { closeMenu, showDayCard, showDeath, showEnding, showPause, showProfessions } from '../ui/menu';
 import { isTouch, setupTouch, stick } from '../ui/touch';
 
@@ -23,14 +30,30 @@ const V = CONFIG.vision;
 const PL = CONFIG.player;
 const Z = CONFIG.zombie;
 const NZ = CONFIG.noise;
+const B = CONFIG.build;
 const rad = (deg: number) => (deg * Math.PI) / 180;
 const angDiff = (a: number, b: number) => Math.abs(((a - b + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
 const CONTAINER_CH = 'fkrcwx';
+const OUTDOOR_CH = ',=_~:8E';
 
 type Body = Phaser.Physics.Arcade.Body;
-type Focus =
-  | { kind: 'door' | 'container' | 'car' | 'tap' | 'bed'; tile: number; label: string }
-  | { kind: 'pile'; pile: Pile; label: string };
+interface Action {
+  label: string;
+  run: () => void;
+}
+/** 面前可以互動嘅嘢：E = 主要動作，R = 第二動作（釘板 / 拆） */
+interface Focus {
+  e?: Action;
+  r?: Action;
+}
+/** 要時間嘅動作（搜刮、釘板、煮嘢…）：郁身或者被打就中斷 */
+interface Task {
+  t: number;
+  total: number;
+  done: () => void;
+  tick?: number;
+  sfx?: 'search' | 'hammer';
+}
 
 export interface WorldData {
   state: GameState;
@@ -42,9 +65,9 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
   tilesVersion = 0;
   zombies!: Zombies;
   player!: Phaser.Physics.Arcade.Sprite & { body: Body };
+  explored!: Uint8Array;
   private rand!: () => number;
   private layer!: Phaser.Tilemaps.TilemapLayer;
-  private explored!: Uint8Array;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private dark!: Phaser.GameObjects.RenderTexture;
   private bloodRT!: Phaser.GameObjects.RenderTexture;
@@ -53,24 +76,34 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
   private boat!: Phaser.GameObjects.Image;
   private heli!: Phaser.GameObjects.Image;
   private rain!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private fireFx!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private grade!: Phaser.Filters.ColorMatrix;
+  private gradeKey = '';
   private rainRect = new Phaser.Geom.Rectangle(0, 0, 1, 1);
   private pileSprites = new Map<Pile, Phaser.GameObjects.Image>();
-  private flashlight = false;
-  private sneak = false;
+  private structSprites = new Map<Structure, Phaser.GameObjects.Image>();
+  flashlight = false;
+  sneak = false;
   private cones: ViewCone[] = [];
   private frame = 0;
   private attackCd = 0;
   private shoveCd = 0;
   private stepT = 0;
-  private focus: Focus | null = null;
-  private search: { tile: number; t: number; total: number } | null = null;
+  focus: Focus | null = null;
+  task: Task | null = null;
   private ground: { items: Item[]; pile?: Pile; name: string } | null = null;
-  private sleeping = false;
-  private dead = false;
+  sleeping = false;
+  dead = false;
   private zombiesNear = 0;
   private alarms: { x: number; y: number; left: number; next: number }[] = [];
+  private fires: { x: number; y: number; left: number }[] = [];
+  /** 飛緊嘅燃燒樽（跟遊戲時間行，開背包減慢時一樣減慢） */
+  private flying: { img: Phaser.GameObjects.Image; sx: number; sy: number; tx: number; ty: number; t: number }[] = [];
   private heliPass: { left: number; next: number; vx: number } | null = null;
   private heliWait = 20;
+  private lightLureT = 0;
+  private groanT = 0;
+  private heartT = 0;
   private lastSave = 0;
   /** 今幀有冇被喪屍打中（死因用） */
   private hitThisFrame = false;
@@ -87,6 +120,11 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.dead = false;
     this.sleeping = false;
     this.flashlight = false;
+    this.task = null;
+    this.fires = [];
+    this.flying = [];
+    this.alarms = [];
+    this.gradeKey = '';
     this.rand = mulberry32((s.seed ^ (s.minutes * 7919)) >>> 0);
     const g = (this.grid = generateMap(mulberry32(s.seed)));
     for (const [i, t] of Object.entries(s.tileOverrides)) g.tiles[+i] = t;
@@ -109,7 +147,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
 
     // 玩家
     if (!s.player.x) this.placePlayer();
-    const p = this.physics.add.sprite(s.player.x, s.player.y, 'player');
+    const p = this.physics.add.sprite(s.player.x, s.player.y, 'player', 0);
     p.setCircle(PL.radius, p.width / 2 - PL.radius, p.height / 2 - PL.radius).setCollideWorldBounds(true).setDepth(11);
     this.player = p as typeof this.player;
     this.physics.add.collider(p, this.layer);
@@ -121,6 +159,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     else this.zombies.spawnRandom(Z.startCount, p.x, p.y, Z.minSpawnTiles);
 
     for (const pile of s.piles) this.pileSprite(pile);
+    for (const st of s.structures) this.structSprite(st);
 
     const evac0 = g.evac[0];
     this.boat = this.add
@@ -134,7 +173,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.dark = this.add.renderTexture(0, 0, mapW, mapH).setOrigin(0).setDepth(20);
     this.lightGfx = this.make.graphics({}, false);
 
-    // 雨
+    // 雨 / 火
     this.rain = this.add
       .particles(0, 0, 'rain', {
         emitZone: { type: 'random', source: this.rainRect as unknown as Phaser.Types.GameObjects.Particles.RandomZoneSource },
@@ -147,6 +186,16 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
         alpha: { start: 0.8, end: 0.1 },
       })
       .setDepth(22);
+    this.fireFx = this.add
+      .particles(0, 0, 'fire', {
+        speedY: { min: -40, max: -15 },
+        speedX: { min: -12, max: 12 },
+        lifespan: 600,
+        scale: { start: 1.4, end: 0.2 },
+        alpha: { start: 1, end: 0 },
+        emitting: false,
+      })
+      .setDepth(21);
 
     const cam = this.cameras.main;
     cam.setBounds(0, 0, mapW, mapH).startFollow(p, true, 0.15, 0.15);
@@ -157,6 +206,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     fitZoom();
     this.scale.on('resize', fitZoom);
     this.events.once('shutdown', () => this.scale.off('resize', fitZoom));
+    // 每日調色（DESIGN.md §5.1）
+    this.grade = cam.filters.external.addColorMatrix();
 
     this.setupInput();
     showHud(true);
@@ -189,13 +240,16 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
 
   private setupInput() {
     const kb = this.input.keyboard!;
-    this.keys = kb.addKeys('W,A,S,D,SHIFT,SPACE,E,C,F,M,TAB,ESC,ONE,TWO,THREE,FOUR,FIVE', true) as Record<string, Phaser.Input.Keyboard.Key>;
+    this.keys = kb.addKeys('W,A,S,D,SHIFT,SPACE,E,R,G,C,F,M,P,TAB,ESC,ONE,TWO,THREE,FOUR,FIVE', true) as Record<string, Phaser.Input.Keyboard.Key>;
     kb.on('keydown-F', () => this.toggleFlash());
     kb.on('keydown-C', () => (this.sneak = !this.sneak));
     kb.on('keydown-E', () => this.interact());
+    kb.on('keydown-R', () => this.act2());
+    kb.on('keydown-G', () => this.throwMolotov());
     kb.on('keydown-SPACE', () => this.shove());
     kb.on('keydown-TAB', () => this.toggleInventory());
-    kb.on('keydown-M', () => this.toggleMapPanel());
+    kb.on('keydown-M', () => this.togglePhone('map'));
+    kb.on('keydown-P', () => this.togglePhone());
     kb.on('keydown-ESC', () => this.pause());
     ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE'].forEach((k, i) => kb.on(`keydown-${k}`, () => this.hotbar(i)));
     this.input.on('pointerdown', (ptr: Phaser.Input.Pointer) => {
@@ -207,15 +261,22 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
         if (a === 'sneak') this.sneak = !this.sneak;
         if (a === 'flash') this.toggleFlash();
         if (a === 'inv') this.toggleInventory();
-        if (a === 'map') this.toggleMapPanel();
+        if (a === 'phone') this.togglePhone();
         if (a === 'pause') this.pause();
       };
     }
     this.touch = isTouch();
-    if (this.touch) setupTouch({ attack: () => this.attack(), shove: () => this.shove(), use: () => this.interact() });
+    if (this.touch)
+      setupTouch({
+        attack: () => this.attack(),
+        shove: () => this.shove(),
+        use: () => this.interact(),
+        act2: () => this.act2(),
+        throw: () => this.throwMolotov(),
+      });
   }
 
-  // ───────────────────────── ZWorld ─────────────────────────
+  // ───────────────────────── 格仔 / ZWorld ─────────────────────────
   setTile(i: number, ch: string) {
     const idx = tileIndex(ch);
     this.grid.tiles[i] = idx;
@@ -224,25 +285,38 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.tilesVersion++;
   }
 
-  bashDoor(tile: number, amount: number) {
-    const hp = (this.s.doorHp[tile] ?? Z.doorHp) - amount;
+  private tileCenter(i: number) {
+    return { x: ((i % this.grid.w) + 0.5) * T, y: (Math.floor(i / this.grid.w) + 0.5) * T };
+  }
+
+  private sfx(name: Parameters<typeof play>[0], x = this.player.x, y = this.player.y, maxTiles = 20) {
+    play(name, Math.hypot(x - this.player.x, y - this.player.y), x - this.player.x, maxTiles);
+  }
+
+  /** 喪屍打門 / 窗 / 板 */
+  bashTile(tile: number, amount: number) {
+    const ch = DEF_BY_INDEX[this.grid.tiles[tile]].ch;
+    const hp = (this.s.doorHp[tile] ?? CONFIG.tileHp[ch] ?? Z.doorHp) - amount;
     this.s.doorHp[tile] = hp;
+    const { x, y } = this.tileCenter(tile);
+    if (Math.floor(hp + amount) !== Math.floor(hp)) this.sfx('bash', x, y, 16);
     if (hp > 0) return;
     delete this.s.doorHp[tile];
-    this.setTile(tile, 'B');
-    const x = ((tile % this.grid.w) + 0.5) * T;
-    const y = (Math.floor(tile / this.grid.w) + 0.5) * T;
-    this.noise(x, y, NZ.doorBreak);
-    if (Math.hypot(x - this.player.x, y - this.player.y) < 16 * T) toast('砰！有道門被撞爛咗');
+    this.setTile(tile, BREAKS_TO[ch] ?? 'B');
+    const glass = ch === 'W' || ch === 'C';
+    this.noise(x, y, glass ? NZ.glass : NZ.doorBreak);
+    this.sfx(glass ? 'glass' : 'bash', x, y, 30);
+    if (Math.hypot(x - this.player.x, y - this.player.y) < 16 * T) toast(glass ? '乒！有隻窗被打爛咗' : '砰！有塊板 / 道門被撞爛咗');
   }
 
   onAttack(_z: Zombie) {
     if (this.dead) return;
     const p = this.s.player;
     if (this.sleeping) this.wake('你被襲擊嘈醒！');
-    this.search = null;
+    this.cancelTask();
     p.hp -= Z.damageMin + this.rand() * (Z.damageMax - Z.damageMin);
     this.hitThisFrame = true;
+    this.sfx('hurt');
     this.cameras.main.flash(120, 110, 20, 32);
     this.cameras.main.shake(CONFIG.combat.shakeMs, CONFIG.combat.shakeIntensity * 2);
     const r = this.rand();
@@ -272,7 +346,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
   update(_t: number, dtMs: number) {
     const s = this.s;
     const dtReal = Math.min(dtMs, 50) / 1000;
-    const overlay = inventoryOpen() || mapOpen();
+    const overlay = inventoryOpen() || phoneOpen();
     const slow = overlay ? CONFIG.time.overlaySlow : 1;
     this.physics.world.timeScale = 1 / slow;
     const dt = dtReal * slow;
@@ -310,6 +384,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     p.body.setVelocity(moving ? (mx / len) * speed : 0, moving ? (my / len) * speed : 0);
     P.x = p.x;
     P.y = p.y;
+    if (moving) p.anims.play('p-walk', true);
+    else p.anims.stop();
 
     // 面向
     if (this.touch) {
@@ -319,23 +395,27 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       p.rotation = Math.atan2(ptr.y - p.y, ptr.x - p.x);
     }
 
-    // 腳步聲
+    // 腳步聲（潛行技能減細）
     this.stepT -= dt;
     if (moving && this.stepT <= 0) {
       this.stepT = NZ.stepEverySec;
-      const r = running ? NZ.run * (profOf(s).runNoiseMul ?? 1) : this.sneak ? NZ.sneak : NZ.walk;
+      const r = running ? NZ.run * (profOf(s).runNoiseMul ?? 1) : this.sneak ? NZ.sneak * sneakNoiseMul(s) : NZ.walk;
       this.noise(p.x, p.y, r);
+      play('step', 0, 0);
     }
-    if (moving) this.search = null;
+    if (moving) this.cancelTask();
+    // 潛行經驗：附近有喪屍但冇被發現
+    if (this.sneak && moving && this.zombiesNear > 0 && this.zombies.chasingCount === 0) this.xp('sneak', CONFIG.skills.xp.sneakSec * dt);
 
     this.attackCd -= dt;
     this.shoveCd -= dt;
-    this.tickSearch(dt);
+    this.tickTask(dt);
     this.updateFocus();
 
     const night = isNight(s.minutes);
     let sight = this.flashlight ? Z.sightTilesFlashlight : night ? Z.sightTilesNight : Z.sightTiles;
     if (isStorm(s.minutes)) sight *= V.stormMul;
+    if (this.sneak) sight *= sneakSightMul(s);
     this.zombies.update(dt, p.x, p.y, PL.radius, sight * T, true);
 
     const cause = tickNeeds(s, dt, dtMin, {
@@ -343,20 +423,24 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       zombiesNear: this.zombiesNear,
       dark: nightness(s.minutes) > 0.5,
       flashlight: this.flashlight,
+      phoneOpen: phoneOpen(),
+      powerOn: powerOn(s.minutes),
     });
     if (this.flashlight && P.battery <= 0) {
       this.flashlight = false;
       toast('電筒冇電');
     }
+    this.tickFires(dt);
     if (P.hp <= 0) return this.die(this.hitThisFrame ? '被喪屍殺死' : cause ?? '傷重');
     this.hitThisFrame = false;
 
-    this.tickEvents(dtReal);
+    this.tickEvents(dtReal, dtMin);
     this.tickSleep();
+    this.tickAudio(dtReal);
 
     if (this.frame++ % V.updateEveryFrames === 0) this.updateVision();
     if (this.frame % V.exploreEveryFrames === 0) this.markExplored();
-    if (mapOpen() && this.frame % 30 === 0) this.drawMapPanel();
+    if (phoneOpen() && this.frame % 20 === 0) this.renderPhonePanel();
 
     const wv = this.cameras.main.worldView;
     this.rainRect.setTo(wv.x - 40, wv.y - 60, wv.width + 120, wv.height * 0.6);
@@ -382,7 +466,15 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     if (s.minutes - this.lastSave >= CONFIG.save.everyMin) this.saveNow();
   }
 
-  // ───────────────────────── 噪音 / 視野 ─────────────────────────
+  private xp(k: SkillId, amount: number) {
+    const msg = gainXp(this.s, k, amount);
+    if (msg) {
+      toast(msg);
+      play('chime');
+    }
+  }
+
+  // ───────────────────────── 噪音 / 視野 / 調色 ─────────────────────────
   noise(x: number, y: number, tiles: number) {
     const mul = isStorm(this.s.minutes) ? NZ.stormMul : 1;
     this.zombies.hear(x, y, tiles * T * mul);
@@ -406,11 +498,14 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       gfx.fillStyle(0xffffff, V.softEdgeAlpha).fillPoints(outer as Phaser.Math.Vector2[], true);
       gfx.fillStyle(0xffffff, 1).fillPoints(inner as Phaser.Math.Vector2[], true);
     }
-    // 只填鏡頭見到嘅範圍，慳 GPU
+    // 火會照亮附近
+    for (const f of this.fires) {
+      const d = Math.hypot(f.x - p.x, f.y - p.y);
+      if (castRay(g, p.x, p.y, Math.atan2(f.y - p.y, f.x - p.x), d) >= d) gfx.fillStyle(0xffffff, 0.8).fillCircle(f.x, f.y, CONFIG.throw.radiusTiles * T * 1.5);
+    }
     const wv = this.cameras.main.worldView;
     this.dark.clear().fill(0x000000, darkness(s.minutes), wv.x - T, wv.y - T, wv.width + 2 * T, wv.height + 2 * T).erase(gfx).render();
 
-    // 牆後 / 視野外嘅喪屍唔顯示；順手數附近見到幾多隻（驚恐用）
     let near = 0;
     const nearPx = CONFIG.needs.panicNearTiles * T;
     for (const z of this.zombies.list) {
@@ -423,6 +518,23 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     const w = weatherOf(s.minutes);
     this.rain.emitting = w === 'rain' || w === 'storm';
     this.rain.quantity = w === 'storm' ? 7 : 2;
+    this.updateGrade();
+  }
+
+  /** 每日 / 天氣調色：晴日暖、暴雨偏藍低對比、斷電夜幾乎全黑 */
+  private updateGrade() {
+    const s = this.s;
+    const key = !powerOn(s.minutes) && nightness(s.minutes) > 0.5 ? 'blackout' : weatherOf(s.minutes);
+    if (key === this.gradeKey) return;
+    this.gradeKey = key;
+    const gr = CONFIG.grade[key];
+    const b = gr.blue;
+    this.grade.colorMatrix
+      .reset()
+      .saturate(gr.sat)
+      .brightness(gr.bright, true)
+      .contrast(gr.contrast, true)
+      .multiply([1 - b, 0, 0, 0, 0, 0, 1 - b * 0.4, 0, 0, 0, 0, 0, 1 + b, 0, 0, 0, 0, 0, 1, 0], true);
   }
 
   private markExplored() {
@@ -440,7 +552,6 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
         let cx = (tx + 0.5) * T;
         let cy = (ty + 0.5) * T;
         if (isSolid(g, tx, ty)) {
-          // 牆格：試佢面向玩家嗰邊
           const a = Math.atan2(p.y - cy, p.x - cx);
           cx += Math.cos(a) * (T * 0.55);
           cy += Math.sin(a) * (T * 0.55);
@@ -454,7 +565,6 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     const P = this.s.player;
     let a = this.player.rotation;
     if (this.touch) {
-      // 手機：自動面向最近喪屍
       let best = CONFIG.touch.autoAimTiles * T;
       for (const z of this.zombies.list) {
         const d = Math.hypot(z.sprite.x - this.player.x, z.sprite.y - this.player.y);
@@ -483,26 +593,31 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     const s = this.s;
     const P = s.player;
     const w = P.weapon ? ITEMS[P.weapon.id] : null;
-    const cost = w?.stamina ?? PL.fistStamina;
+    const cost = (w?.stamina ?? PL.fistStamina) * meleeStaminaMul(s);
     if (P.stamina < cost) return toast('冇晒氣力');
     P.stamina -= cost;
     this.attackCd = w?.cooldown ?? PL.fistCooldown;
     const reach = w?.reach ?? PL.fistReach;
     const angle = this.facing();
     this.drawSwing(angle, reach);
+    this.sfx('swing');
     this.noise(this.player.x, this.player.y, NZ.melee);
     const hit = this.targetsInArc(reach, PL.attackArcDeg, angle)[0];
-    if (!hit) return;
+    if (!hit) return this.hitWindow(angle, reach, !w);
     const z = hit.z;
-    let dmg = (w?.damage ?? PL.fistDamage) * (profOf(s).damageMul ?? 1);
+    let dmg = (w?.damage ?? PL.fistDamage) * (profOf(s).damageMul ?? 1) * meleeDamageMul(s);
     if (z.mode === 'down') {
       dmg *= PL.stompMul;
       toast('踩頭！');
     }
     z.hp -= dmg;
-    z.mode = z.mode === 'down' ? 'down' : 'chase';
-    z.timer = Math.max(z.timer, z.mode === 'chase' ? Z.chaseMemorySec : z.timer);
+    if (z.mode !== 'down') {
+      z.mode = 'chase';
+      z.timer = Z.chaseMemorySec;
+    }
+    this.xp('melee', CONFIG.skills.xp.meleeHit);
     this.stampBlood(z.sprite.x, z.sprite.y);
+    this.sfx('hit');
     this.zombies.knock(z, this.player.x, this.player.y, w?.knockback ?? 1, false);
     this.physics.pause();
     this.time.delayedCall(CONFIG.combat.hitStopMs, () => this.physics.resume());
@@ -515,6 +630,24 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     if (z.hp <= 0) this.killZombie(z);
   }
 
+  /** 冇打中喪屍：面前係窗就打爛佢（爬得過，但好嘈） */
+  private hitWindow(angle: number, reach: number, fists: boolean) {
+    const g = this.grid;
+    const tx = Math.floor((this.player.x + Math.cos(angle) * (reach * 0.8)) / T);
+    const ty = Math.floor((this.player.y + Math.sin(angle) * (reach * 0.8)) / T);
+    const ch = defAt(g, tx, ty)?.ch;
+    if (ch !== 'W' && ch !== 'C') return;
+    const i = ty * g.w + tx;
+    this.setTile(i, 'V');
+    const { x, y } = this.tileCenter(i);
+    this.noise(x, y, NZ.glass);
+    this.sfx('glass', x, y);
+    if (fists && this.rand() < 0.5) {
+      this.s.player.bleeding = true;
+      toast('徒手打爛窗，割親手出血！');
+    } else toast('打爛咗隻窗（好嘈）');
+  }
+
   shove() {
     if (this.dead || this.sleeping || this.shoveCd > 0 || inventoryOpen()) return;
     const P = this.s.player;
@@ -523,6 +656,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.shoveCd = PL.shoveCooldown;
     const angle = this.facing();
     this.drawSwing(angle, PL.shoveReach);
+    this.sfx('swing');
     const power = 1.3 * (profOf(this.s).shoveMul ?? 1);
     for (const { z } of this.targetsInArc(PL.shoveReach, PL.shoveArcDeg, angle)) this.zombies.knock(z, this.player.x, this.player.y, power, true);
   }
@@ -538,6 +672,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
 
   private killZombie(z: Zombie) {
     this.s.player.kills++;
+    this.sfx('kill', z.sprite.x, z.sprite.y);
     this.stampBlood(z.sprite.x + 3, z.sprite.y - 2);
     this.stampBlood(z.sprite.x - 3, z.sprite.y + 2);
     if (z.carry?.length) {
@@ -556,7 +691,148 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.bloodRT.stamp('blood', undefined, x, y).render();
   }
 
-  // ───────────────────────── 互動 / 搜刮 ─────────────────────────
+  /** 燃燒樽：向滑鼠位置（手機：面前）掟，落地起火燒附近喪屍 */
+  throwMolotov() {
+    if (this.dead || this.sleeping || inventoryOpen()) return;
+    const s = this.s;
+    if (!countOf(s, 'molotov')) return toast('冇燃燒樽（製作：空樽 + 火酒 + 布碎）');
+    const p = this.player;
+    const range = CONFIG.throw.rangeTiles * T;
+    let tx: number;
+    let ty: number;
+    if (this.touch) {
+      tx = p.x + Math.cos(p.rotation) * range;
+      ty = p.y + Math.sin(p.rotation) * range;
+    } else {
+      const ptr = this.input.activePointer.positionToCamera(this.cameras.main) as Phaser.Math.Vector2;
+      const d = Math.min(range, Math.hypot(ptr.x - p.x, ptr.y - p.y));
+      const a = Math.atan2(ptr.y - p.y, ptr.x - p.x);
+      tx = p.x + Math.cos(a) * d;
+      ty = p.y + Math.sin(a) * d;
+    }
+    // 撞牆就喺牆前落地
+    const a = Math.atan2(ty - p.y, tx - p.x);
+    const d = Math.min(Math.hypot(tx - p.x, ty - p.y), castRay(this.grid, p.x, p.y, a, range) - 4);
+    tx = p.x + Math.cos(a) * d;
+    ty = p.y + Math.sin(a) * d;
+    consume(s, 'molotov');
+    this.renderHotbar();
+    this.flying.push({ img: this.add.image(p.x, p.y, 'molotov').setDepth(21), sx: p.x, sy: p.y, tx, ty, t: 0 });
+    this.sfx('swing');
+  }
+
+  private tickFires(dt: number) {
+    for (const f of this.flying) {
+      f.t += dt / CONFIG.throw.flightSec;
+      const k = Math.min(1, f.t);
+      f.img.setPosition(f.sx + (f.tx - f.sx) * k, f.sy + (f.ty - f.sy) * k - Math.sin(k * Math.PI) * 10).setAngle(k * 540);
+      if (k < 1) continue;
+      f.img.destroy();
+      this.fires.push({ x: f.tx, y: f.ty, left: CONFIG.throw.burnSec });
+      this.noise(f.tx, f.ty, NZ.molotov);
+      this.sfx('glass', f.tx, f.ty);
+      this.sfx('fire', f.tx, f.ty);
+    }
+    this.flying = this.flying.filter((f) => f.t < 1);
+    if (!this.fires.length) return;
+    const R = CONFIG.throw.radiusTiles * T;
+    for (const f of this.fires) {
+      f.left -= dt;
+      this.fireFx.emitParticleAt(f.x + (this.rand() - 0.5) * R * 1.4, f.y + (this.rand() - 0.5) * R * 1.4, 2);
+      for (const z of [...this.zombies.list]) {
+        if (Math.hypot(z.sprite.x - f.x, z.sprite.y - f.y) > R) continue;
+        z.hp -= CONFIG.throw.dps * dt;
+        if (z.hp <= 0) this.killZombie(z);
+      }
+      if (Math.hypot(this.player.x - f.x, this.player.y - f.y) < R) {
+        this.s.player.hp -= CONFIG.throw.playerDps * dt;
+        if (this.frame % 30 === 0) toast('🔥 好熱！快啲走開');
+      }
+    }
+    this.fires = this.fires.filter((f) => f.left > 0);
+  }
+
+  // ───────────────────────── 互動 ─────────────────────────
+  private hasTool(...ids: string[]) {
+    return ids.some((id) => countOf(this.s, id) > 0);
+  }
+
+  /** 面前格嘅可以做嘅動作 */
+  private actionsFor(tile: number): Focus | null {
+    const s = this.s;
+    const g = this.grid;
+    const ch = DEF_BY_INDEX[g.tiles[tile]].ch;
+    const { x: cx, y: cy } = this.tileCenter(tile);
+    const f: Focus = {};
+    const canBoard = this.hasTool('hammer') && countOf(s, 'plank') > 0 && countOf(s, 'nails') > 0;
+    const boardLabel = canBoard ? 'R 釘板' : 'R 釘板（要錘仔、木板、釘）';
+    switch (ch) {
+      case 'D':
+        f.e = { label: 'E 開門', run: () => this.toggleDoor(tile, 'O') };
+        f.r = { label: boardLabel, run: () => this.board(tile, 'J') };
+        break;
+      case 'O':
+        f.e = { label: 'E 關門', run: () => this.toggleDoor(tile, 'D') };
+        break;
+      case 'W':
+        f.e = { label: 'E 拉窗簾', run: () => this.curtain(tile, 'C') };
+        f.r = { label: boardLabel, run: () => this.board(tile, 'H') };
+        break;
+      case 'C':
+        f.e = { label: 'E 開窗簾', run: () => this.curtain(tile, 'W') };
+        f.r = { label: boardLabel, run: () => this.board(tile, 'H') };
+        break;
+      case 'V':
+        f.r = { label: boardLabel, run: () => this.board(tile, 'H') };
+        break;
+      case 'H':
+      case 'J':
+        f.r = {
+          label: this.hasTool('hammer', 'crowbar') ? 'R 拆板' : 'R 拆板（要錘仔或撬棍）',
+          run: () => this.unboard(tile, ch === 'H' ? 'W' : 'D'),
+        };
+        break;
+      case 'K':
+        f.e = {
+          label: this.hasTool('crowbar') ? 'E 撬開凍倉門' : '凍倉鐵門鎖住咗（要撬棍）',
+          run: () => this.pry(tile),
+        };
+        break;
+      case 'A':
+        f.e = { label: 'E 弄響汽車警報（引開喪屍）', run: () => this.carAlarm(cx, cy) };
+        break;
+      case 'T':
+        f.e = { label: waterOn(s.minutes) ? 'E 飲水 / 裝水' : '水龍頭（斷咗水）', run: () => this.tap() };
+        break;
+      case 'G':
+        f.e = { label: 'E 用爐頭煮生嘢', run: () => this.cook(cx, cy) };
+        break;
+      case 'b':
+        f.e = { label: 'E 瞓覺', run: () => this.sleep() };
+        f.r = this.dismantleAction(tile, ch);
+        break;
+      case 't':
+        f.r = this.dismantleAction(tile, ch);
+        break;
+    }
+    if (CONTAINER_CH.includes(ch)) {
+      const name = CONFIG.containers[ch].name;
+      f.e = {
+        label: s.containers[tile] ? `E 打開${name}（搜過）` : `E 搜${name}`,
+        run: () => this.searchContainer(tile, ch),
+      };
+      if (ch === 'w' && s.containers[tile]) f.r = this.dismantleAction(tile, ch);
+    }
+    return f.e || f.r ? f : null;
+  }
+
+  private dismantleAction(tile: number, ch: string): Action {
+    return {
+      label: this.hasTool('hammer', 'crowbar') ? 'R 拆（攞木板）' : 'R 拆（要錘仔或撬棍）',
+      run: () => this.dismantle(tile, ch),
+    };
+  }
+
   private updateFocus() {
     const p = this.player;
     const g = this.grid;
@@ -569,8 +845,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       for (let dx = -2; dx <= 2; dx++) {
         const tx = ptx + dx;
         const ty = pty + dy;
-        const d = defAt(g, tx, ty);
-        if (!d) continue;
+        if (!defAt(g, tx, ty)) continue;
         const cx = (tx + 0.5) * T;
         const cy = (ty + 0.5) * T;
         const dist = Math.hypot(cx - p.x, cy - p.y);
@@ -579,16 +854,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
         if (dist > 10 && off > rad(80)) continue;
         const score = dist + off * 10;
         if (score >= bestScore) continue;
-        const tile = ty * g.w + tx;
-        let f: Focus | null = null;
-        if (d.ch === 'D') f = { kind: 'door', tile, label: 'E 開門' };
-        else if (d.ch === 'O') f = { kind: 'door', tile, label: 'E 關門' };
-        else if (CONTAINER_CH.includes(d.ch)) {
-          const name = CONFIG.containers[d.ch].name;
-          f = { kind: 'container', tile, label: s.containers[tile] ? `E 打開${name}（搜過）` : `E 搜${name}` };
-        } else if (d.ch === 'A') f = { kind: 'car', tile, label: 'E 弄響汽車警報（引開喪屍）' };
-        else if (d.ch === 'T') f = { kind: 'tap', tile, label: waterOn(s.minutes) ? 'E 飲水' : '水龍頭（斷咗水）' };
-        else if (d.ch === 'b') f = { kind: 'bed', tile, label: 'E 瞓覺' };
+        const f = this.actionsFor(ty * g.w + tx);
         if (f) {
           best = f;
           bestScore = score;
@@ -597,71 +863,231 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     for (const pile of s.piles) {
       const dist = Math.hypot(pile.x - p.x, pile.y - p.y);
       if (dist <= PL.reach && dist < bestScore) {
-        best = { kind: 'pile', pile, label: pile.turnAt !== undefined ? 'E 搜你嘅屍體' : 'E 睇地上' };
+        const corpse = pile.turnAt !== undefined;
+        best = { e: { label: corpse ? 'E 搜你嘅屍體' : 'E 睇地上', run: () => this.openWith(pile.items, corpse ? '你嘅屍體' : '地上', pile) } };
+        bestScore = dist;
+      }
+    }
+    for (const st of s.structures) {
+      const dist = Math.hypot(st.x - p.x, st.y - p.y);
+      if (dist <= PL.reach && dist < bestScore) {
+        best = {
+          e: { label: `E 雨水收集器（${Math.floor(st.water / 100)} 樽水）`, run: () => this.useCollector(st) },
+          r: { label: 'R 收返', run: () => this.pickupStructure(st) },
+        };
         bestScore = dist;
       }
     }
     this.focus = best;
-    setPrompt(this.search ? null : best?.label ?? null);
+    const label = this.task ? null : [best?.e?.label, best?.r?.label].filter(Boolean).join(' · ') || null;
+    setPrompt(label);
+    const act2 = document.getElementById('t-act2')!;
+    act2.classList.toggle('hidden', !best?.r || !!this.task);
+    if (best?.r) act2.textContent = best.r.label.replace(/^R /, '').replace(/（.*/, '');
+    document.getElementById('t-throw')!.classList.toggle('hidden', !this.touch || !countOf(s, 'molotov'));
   }
 
   interact() {
     if (this.dead || this.sleeping) return;
     if (inventoryOpen()) return this.toggleInventory();
-    const f = this.focus;
-    if (!f) return;
-    const s = this.s;
-    if (f.kind === 'pile') return this.openWith(f.pile.items, f.pile.turnAt !== undefined ? '你嘅屍體' : '地上', f.pile);
-    const g = this.grid;
-    const ch = DEF_BY_INDEX[g.tiles[f.tile]].ch;
-    const cx = ((f.tile % g.w) + 0.5) * T;
-    const cy = (Math.floor(f.tile / g.w) + 0.5) * T;
-    switch (f.kind) {
-      case 'door':
-        if (ch === 'O') {
-          const blocked = [this.player, ...this.zombies.list.map((z) => z.sprite)].some((o) => Math.abs(o.x - cx) < T * 0.7 && Math.abs(o.y - cy) < T * 0.7);
-          if (blocked) return toast('有嘢擋住道門');
-          this.setTile(f.tile, 'D');
-        } else this.setTile(f.tile, 'O');
-        this.noise(cx, cy, NZ.door);
-        break;
-      case 'container':
-        if (s.containers[f.tile]) this.openWith(s.containers[f.tile], CONFIG.containers[ch].name);
-        else this.search = { tile: f.tile, t: 0, total: CONFIG.containers[ch].sec };
-        break;
-      case 'car':
-        if (this.alarms.some((a) => Math.hypot(a.x - cx, a.y - cy) < T * 3)) return;
-        this.alarms.push({ x: cx, y: cy, left: NZ.carAlarmSec, next: 0 });
-        toast('嗶嗶嗶——汽車警報響起！');
-        break;
-      case 'tap':
-        if (!waterOn(s.minutes)) return toast('冇水……第三日開始斷咗水');
-        s.player.thirst = 100;
-        toast('飲飽咗水');
-        break;
-      case 'bed':
-        if (this.zombies.chasingCount > 0) return toast('附近有喪屍，瞓唔落');
-        this.sleeping = true;
-        document.getElementById('sleep')!.classList.remove('hidden');
-        break;
+    this.focus?.e?.run();
+  }
+
+  act2() {
+    if (this.dead || this.sleeping || inventoryOpen()) return;
+    this.focus?.r?.run();
+  }
+
+  private startTask(sec: number, done: () => void, sfx?: Task['sfx']) {
+    this.task = { t: 0, total: sec, done, sfx, tick: 0 };
+  }
+
+  private cancelTask() {
+    if (this.task) this.task = null;
+  }
+
+  private tickTask(dt: number) {
+    const k = this.task;
+    if (!k) return setProgress(null);
+    k.t += dt;
+    k.tick = (k.tick ?? 0) - dt;
+    if (k.sfx && k.tick <= 0) {
+      k.tick = k.sfx === 'hammer' ? 0.35 : 0.6;
+      this.sfx(k.sfx);
+      if (k.sfx === 'hammer') this.noise(this.player.x, this.player.y, NZ.hammer);
     }
-  }
-
-  private tickSearch(dt: number) {
-    const sr = this.search;
-    if (!sr) return setProgress(null);
-    sr.t += dt;
-    setProgress(Math.min(1, sr.t / sr.total));
-    if (sr.t < sr.total) return;
-    this.search = null;
+    setProgress(Math.min(1, k.t / k.total));
+    if (k.t < k.total) return;
+    this.task = null;
     setProgress(null);
-    const s = this.s;
-    s.containers[sr.tile] = rollContainer(s.seed, sr.tile, this.grid.loot[sr.tile]);
-    const ch = DEF_BY_INDEX[this.grid.tiles[sr.tile]].ch;
-    this.openWith(s.containers[sr.tile], CONFIG.containers[ch].name);
+    k.done();
   }
 
-  // ───────────────────────── 背包 / 地圖 / 快捷欄 ─────────────────────────
+  private toggleDoor(tile: number, to: 'O' | 'D') {
+    const { x: cx, y: cy } = this.tileCenter(tile);
+    if (to === 'D') {
+      const blocked = [this.player, ...this.zombies.list.map((z) => z.sprite)].some((o) => Math.abs(o.x - cx) < T * 0.7 && Math.abs(o.y - cy) < T * 0.7);
+      if (blocked) return toast('有嘢擋住道門');
+    }
+    this.setTile(tile, to);
+    this.noise(cx, cy, NZ.door);
+    this.sfx('door', cx, cy);
+  }
+
+  private curtain(tile: number, to: 'C' | 'W') {
+    this.setTile(tile, to);
+    this.sfx('search');
+    if (to === 'C') toast('拉埋窗簾：外面望唔入嚟，夜晚開電筒都唔會引喪屍');
+  }
+
+  private board(tile: number, to: 'H' | 'J') {
+    const s = this.s;
+    if (!this.hasTool('hammer') || !countOf(s, 'plank') || !countOf(s, 'nails')) return toast('釘板要：錘仔、木板、一包釘');
+    this.startTask(B.boardSec * carpTimeMul(s), () => {
+      // 釘緊嗰陣隻窗可能已經俾喪屍打爛：爛窗照釘得
+      const now = DEF_BY_INDEX[this.grid.tiles[tile]].ch;
+      if (!(to === 'H' ? 'WCV' : 'D').includes(now)) return toast('釘唔到：嗰度已經變咗');
+      consume(s, 'plank');
+      consume(s, 'nails');
+      this.setTile(tile, to);
+      s.doorHp[tile] = B.boardHp * carpHpMul(s);
+      this.xp('carp', CONFIG.skills.xp.carp);
+      toast(`釘好咗（耐久 ${Math.round(s.doorHp[tile])}）`);
+      this.renderHotbar();
+    }, 'hammer');
+  }
+
+  private unboard(tile: number, to: 'W' | 'D') {
+    if (!this.hasTool('hammer', 'crowbar')) return toast('拆板要錘仔或撬棍');
+    this.startTask(B.dismantleSec * carpTimeMul(this.s), () => {
+      this.setTile(tile, to);
+      delete this.s.doorHp[tile];
+      this.s.player.inv.push(makeItem('plank'));
+      toast('拆返塊木板落嚟');
+    }, 'hammer');
+  }
+
+  private dismantle(tile: number, ch: string) {
+    if (!this.hasTool('hammer', 'crowbar')) return toast('拆傢俬要錘仔或撬棍');
+    this.startTask(B.dismantleSec * carpTimeMul(this.s), () => {
+      if (DEF_BY_INDEX[this.grid.tiles[tile]].ch !== ch) return;
+      const loot = B.dismantle[ch] ?? ['plank'];
+      // 衣櫃入面仲有嘢：放喺地上
+      const left = this.s.containers[tile];
+      this.setTile(tile, '7');
+      const { x, y } = this.tileCenter(tile);
+      const pile: Pile = { x, y, items: [...(left ?? []), ...loot.map(makeItem)] };
+      delete this.s.containers[tile];
+      this.s.piles.push(pile);
+      this.pileSprite(pile);
+      this.xp('carp', CONFIG.skills.xp.carp);
+      toast('拆咗，材料喺地上');
+    }, 'hammer');
+  }
+
+  private pry(tile: number) {
+    if (!this.hasTool('crowbar')) return toast('鐵門鎖住咗，要撬棍先撬得開');
+    const { x, y } = this.tileCenter(tile);
+    this.startTask(4, () => {
+      this.setTile(tile, 'B');
+      this.noise(x, y, NZ.doorBreak);
+      this.sfx('bash', x, y);
+      toast('撬開咗凍倉鐵門，裡面好凍……');
+    }, 'hammer');
+  }
+
+  private carAlarm(cx: number, cy: number) {
+    if (this.alarms.some((a) => Math.hypot(a.x - cx, a.y - cy) < T * 3)) return;
+    this.alarms.push({ x: cx, y: cy, left: NZ.carAlarmSec, next: 0 });
+    toast('嗶嗶嗶——汽車警報響起！');
+  }
+
+  private tap() {
+    const s = this.s;
+    if (!waterOn(s.minutes)) return toast('冇水……第三日開始斷咗水。用雨水收集器或者樽裝水');
+    s.player.thirst = 100;
+    const n = fillBottles(s);
+    toast(n ? `飲飽咗水，仲裝滿咗 ${n} 個空樽` : '飲飽咗水（有空樽可以順手裝水）');
+    this.sfx('eat');
+    refreshInventory();
+  }
+
+  private cook(cx: number, cy: number) {
+    const s = this.s;
+    if (!s.player.inv.some((it) => ITEMS[it.id].raw)) return toast('冇生嘢要煮（生雞翼、生魚、白米）');
+    this.startTask(CONFIG.cook.sec, () => {
+      toast(cookAll(s, this.rand));
+      this.renderHotbar();
+    }, 'search');
+    this.noise(cx, cy, NZ.cook);
+  }
+
+  private sleep() {
+    if (this.zombies.chasingCount > 0) return toast('附近有喪屍，瞓唔落');
+    this.sleeping = true;
+    document.getElementById('sleep')!.classList.remove('hidden');
+  }
+
+  private searchContainer(tile: number, ch: string) {
+    const s = this.s;
+    if (s.containers[tile]) return this.openWith(s.containers[tile], CONFIG.containers[ch].name);
+    this.startTask(CONFIG.containers[ch].sec, () => {
+      const g = this.grid;
+      s.containers[tile] = rollContainer(s.seed, tile, g.loot[tile], {
+        minutes: s.minutes,
+        fridge: ch === 'f',
+        shelfMul: profOf(s).shelfMul ?? 1,
+        clue: g.clues[tile],
+        sample: tile === g.sampleTile,
+      });
+      this.openWith(s.containers[tile], CONFIG.containers[ch].name);
+    }, 'search');
+  }
+
+  // ───────────────────────── 雨水收集器 ─────────────────────────
+  private structSprite(st: Structure) {
+    this.structSprites.set(st, this.add.image(st.x, st.y, 'collector').setDepth(5));
+  }
+
+  private placeCollector() {
+    const s = this.s;
+    const p = this.player;
+    const ch = defAt(this.grid, Math.floor(p.x / T), Math.floor(p.y / T))?.ch ?? '';
+    if (!OUTDOOR_CH.includes(ch)) return toast('雨水收集器要放喺室外先接到雨');
+    consume(s, 'collector');
+    const st: Structure = { x: p.x, y: p.y, kind: 'collector', water: 0 };
+    s.structures.push(st);
+    this.structSprite(st);
+    toast('放低咗雨水收集器：落雨就會儲水');
+    refreshInventory();
+  }
+
+  private useCollector(st: Structure) {
+    const s = this.s;
+    if (st.water < 100) return toast('仲未儲夠一樽水');
+    let n = 0;
+    while (st.water >= 100 && fillBottles(s, 1)) {
+      st.water -= 100;
+      n++;
+    }
+    if (!n) {
+      st.water -= 100;
+      s.player.thirst = Math.min(100, s.player.thirst + 40);
+      toast('直接飲咗啲雨水');
+    } else toast(`裝咗 ${n} 樽雨水`);
+    this.sfx('eat');
+  }
+
+  private pickupStructure(st: Structure) {
+    const s = this.s;
+    s.structures.splice(s.structures.indexOf(st), 1);
+    this.structSprites.get(st)?.destroy();
+    this.structSprites.delete(st);
+    s.player.inv.push(makeItem('collector'));
+    toast('收返雨水收集器（儲咗嘅水冇咗）');
+  }
+
+  // ───────────────────────── 背包 / 手機 / 快捷欄 ─────────────────────────
   private openWith(items: Item[], name: string, pile?: Pile) {
     this.ground = { items, name, pile };
     this.showInventory();
@@ -675,7 +1101,6 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       this.cleanPiles();
       return;
     }
-    // 冇開容器：右邊係腳下嘅地
     const p = this.player;
     const pile = this.s.piles.find((pl) => pl.turnAt === undefined && Math.hypot(pl.x - p.x, pl.y - p.y) < PL.reach);
     this.ground = pile ? { items: pile.items, name: '地上', pile } : { items: [], name: '地上' };
@@ -683,10 +1108,15 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
   }
 
   private showInventory() {
-    if (mapOpen()) toggleMap(false);
+    if (phoneOpen()) closePhone();
     const s = this.s;
     const after = (msg: string) => {
-      if (msg) toast(msg);
+      if (msg === PLACE) return this.placeCollector();
+      if (msg) {
+        toast(msg);
+        if (msg.startsWith('📱')) play('chime');
+        else if (/食|飲/.test(msg)) play('eat');
+      }
       autoHotbar(s);
       this.renderHotbar();
     };
@@ -699,20 +1129,40 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
         cap: capacity(s),
         other: this.ground?.items ?? [],
         otherName: this.ground?.name ?? '地上',
+        minutes: s.minutes,
+        recipes: Object.entries(RECIPES).map(([id, r]) => ({
+          id,
+          name: r.name,
+          needs: Object.entries(r.needs)
+            .map(([nid, n]) => `${ITEMS[nid].name} ${Math.min(countOf(s, nid), n)}/${n}`)
+            .concat((r.tools ?? []).map((t) => `工具：${ITEMS[t].name}${countOf(s, t) ? '✓' : '✗'}`))
+            .join('、'),
+          ok: canCraft(s, r),
+          help: `需要：${Object.entries(r.needs).map(([nid, n]) => `${ITEMS[nid].name}×${n}`).join('、')}${r.tools ? `；工具：${r.tools.map((t) => ITEMS[t].name).join('、')}（唔會用走）` : ''}。${r.skill ? `加${SKILL_NAMES[r.skill]}經驗。` : ''}`,
+        })),
       }),
       {
-        use: (i) => after(useItem(s, i)),
-        take: (j) => this.ground && after(takeItem(s, this.ground.items, j)),
+        use: (i) => after(useItem(s, i, this.rand)),
+        take: (j) => {
+          if (!this.ground) return;
+          after(takeItem(s, this.ground.items, j));
+          play('pickup');
+        },
         takeAll: () => {
           if (!this.ground) return;
-          let msg = '';
-          while (this.ground.items.length && !msg) msg = takeItem(s, this.ground.items, 0);
-          after(msg);
+          const msgs: string[] = [];
+          for (let j = 0; j < this.ground.items.length; ) {
+            const before = this.ground.items.length;
+            const msg = takeItem(s, this.ground.items, j);
+            if (msg) msgs.push(msg);
+            if (this.ground.items.length === before) j++; // 太重攞唔到，試下一件
+          }
+          after([...new Set(msgs)].join('　'));
+          play('pickup');
         },
         drop: (i) => {
           if (!this.ground) return;
           if (!this.ground.pile && this.ground.name === '地上') {
-            // 第一次放低：喺腳下開一堆
             const pile: Pile = { x: this.player.x, y: this.player.y, items: this.ground.items };
             s.piles.push(pile);
             this.pileSprite(pile);
@@ -722,16 +1172,18 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
           after('');
         },
         unequip: (slot) => after((unequip(s, slot), '')),
+        craft: (id) => {
+          after(craft(s, id));
+          play('hammer');
+        },
       },
     );
   }
 
   private pileSprite(pile: Pile) {
-    const img = this.add.image(pile.x, pile.y, pile.turnAt !== undefined ? 'corpse' : 'pile').setDepth(5);
-    this.pileSprites.set(pile, img);
+    this.pileSprites.set(pile, this.add.image(pile.x, pile.y, pile.turnAt !== undefined ? 'corpse' : 'pile').setDepth(5));
   }
 
-  /** 空咗嘅地上物品堆清走 */
   private cleanPiles() {
     this.s.piles = this.s.piles.filter((p) => {
       if (p.items.length || p.turnAt !== undefined) return true;
@@ -751,8 +1203,11 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
 
   private hotbar(i: number) {
     if (this.dead) return;
-    const msg = useHotbar(this.s, i);
-    if (msg) toast(msg);
+    const id = this.s.player.hotbar[i];
+    if (id && ITEMS[id].kind === 'throw') return this.throwMolotov();
+    const msg = useHotbar(this.s, i, this.rand);
+    if (msg === PLACE) this.placeCollector();
+    else if (msg) toast(msg);
     this.renderHotbar();
     refreshInventory();
   }
@@ -760,24 +1215,57 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
   private toggleFlash() {
     if (this.s.player.battery <= 0) return toast('電筒冇電，要換電池');
     this.flashlight = !this.flashlight;
+    play('click');
   }
 
-  toggleMapPanel() {
+  togglePhone(tab?: 'map') {
     if (this.dead) return;
     if (inventoryOpen()) this.toggleInventory();
-    toggleMap(!mapOpen());
-    if (mapOpen()) this.drawMapPanel();
+    if (phoneOpen() && (!tab || phoneTab() === tab)) return closePhone();
+    openPhone(tab ?? phoneTab(), () => this.renderPhonePanel());
+    play('click');
   }
 
-  private drawMapPanel() {
-    const marks = this.s.piles.filter((p) => p.turnAt !== undefined).map((p) => ({ x: p.x / T, y: p.y / T, color: '#e0384f' }));
-    drawMap(this.grid, this.explored, this.player.x / T, this.player.y / T, marks);
+  /** 手機內容：地圖、筆記（線索）、電台、技能 */
+  private renderPhonePanel() {
+    const s = this.s;
+    const P = s.player;
+    const day = Math.min(dayOf(s.minutes), CONFIG.time.lastDay);
+    const total = story.clues.length;
+    const notes =
+      `<p>已收集線索 <b>${s.clues.length}/${total}</b> <span class="info" tabindex="0">ⓘ<span class="pop">線索散落喺唔同地點嘅櫃、雪櫃、貨架。集齊 ${story.cluesForTruth} 件以上，再帶住凍倉入面嘅「密封樣本箱」上船，就會解鎖真相結局。</span></span></p>` +
+      story.clues
+        .map((c) => (s.clues.includes(c.id) ? `<div class="note"><b>${c.title}</b><br>${c.text}</div>` : `<div class="note locked">？？？（喺${['', '便利店', '藥房', '五金舖', '茶餐廳', '街市', '警崗', '唐樓', '夜市', '碼頭'][c.loc]}附近）</div>`))
+        .join('');
+    const radio = story.days
+      .slice(0, day)
+      .map((d, i) => `<div class="note"><b>第${i + 1}日 · ${d.title}</b><br>📻 ${d.radio}</div>`)
+      .reverse()
+      .join('');
+    const skills = (Object.keys(SKILL_NAMES) as SkillId[])
+      .map((k) => {
+        const lv = skillLevel(P, k);
+        const L = CONFIG.skills.levels;
+        const pct = lv >= L.length - 1 ? 100 : ((P.skills[k] - L[lv]) / (L[lv + 1] - L[lv])) * 100;
+        return `<div class="skill"><span style="width:40px">${SKILL_NAMES[k]}</span><span style="width:36px">Lv${lv}</span><i><b style="width:${pct}%"></b></i><span class="info" tabindex="0">ⓘ<span class="pop">${SKILL_HELP[k]}</span></span></div>`;
+      })
+      .join('');
+    renderPhone({ clock: `第${dayOf(s.minutes)}日 ${clock(s.minutes)}`, battery: P.phone, notes, radio, skills });
+    if (phoneTab() === 'map' && P.phone > 0) {
+      const marks = s.piles.filter((p) => p.turnAt !== undefined).map((p) => ({ x: p.x / T, y: p.y / T, color: '#e0384f' }));
+      if (s.clues.length >= 6) {
+        // 線索夠多先知凍倉喺邊
+        const st = this.tileCenter(this.grid.sampleTile);
+        marks.push({ x: st.x / T, y: st.y / T, color: '#c04ad0' });
+      }
+      drawMap(phoneCanvas(), this.grid, this.explored, this.player.x / T, this.player.y / T, marks);
+    }
   }
 
   private pause() {
     if (this.dead) return;
     if (inventoryOpen()) return this.toggleInventory();
-    if (mapOpen()) return toggleMap(false);
+    if (phoneOpen()) return closePhone();
     this.scene.pause();
     showPause(
       () => {
@@ -791,7 +1279,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     );
   }
 
-  // ───────────────────────── 時間 / 事件 ─────────────────────────
+  // ───────────────────────── 時間 / 事件 / 聲音 ─────────────────────────
   private tickSleep() {
     if (!this.sleeping) return;
     const h = hourOf(this.s.minutes);
@@ -806,7 +1294,6 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     toast(msg);
   }
 
-  /** 新一日：標題卡 + 世界變化（DESIGN.md §2.3） */
   private checkDay() {
     const s = this.s;
     const day = Math.min(dayOf(s.minutes), CONFIG.time.lastDay);
@@ -832,9 +1319,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     });
   }
 
-  private tickEvents(dtReal: number) {
+  private tickEvents(dtReal: number, dtMin: number) {
     const s = this.s;
-    // 汽車警報
     for (const a of this.alarms) {
       a.left -= dtReal;
       a.next -= dtReal;
@@ -845,7 +1331,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     }
     this.alarms = this.alarms.filter((a) => a.left > 0);
 
-    // 第 2 日：直升機盤旋，巨大噪音拉走屍群
+    // 第 2 日：直升機
     if (dayOf(s.minutes) === 2 && !isNight(s.minutes)) {
       if (!this.heliPass) {
         this.heliWait -= dtReal;
@@ -877,6 +1363,20 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       this.heli.setVisible(false);
     }
 
+    // 夜晚電筒照住冇窗簾嘅窗：外面嘅喪屍見到光會過嚟
+    this.lightLureT -= dtReal;
+    if (this.flashlight && this.cones[2] && nightness(s.minutes) > 0.5 && this.lightLureT <= 0) {
+      this.lightLureT = NZ.windowLightEverySec;
+      this.windowLightLure();
+    }
+
+    // 雨水收集器
+    const w = weatherOf(s.minutes);
+    if (w === 'rain' || w === 'storm') {
+      const add = (w === 'storm' ? CONFIG.collector.stormPerMin : CONFIG.collector.rainPerMin) * dtMin;
+      for (const st of s.structures) st.water = Math.min(CONFIG.collector.capacity, st.water + add);
+    }
+
     // 屍體變喪屍（上一輪嘅你）
     for (const pile of [...s.piles]) {
       if (pile.turnAt === undefined || s.minutes < pile.turnAt) continue;
@@ -887,7 +1387,53 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     }
   }
 
-  /** 第 7 日碼頭撤離 / 錯過條船 */
+  private windowLightLure() {
+    const flash = this.cones[2];
+    if (!flash) return;
+    const g = this.grid;
+    const p = this.player;
+    const r = flash.radius;
+    const W = tileIndex('W');
+    const Vw = tileIndex('V');
+    let lured = 0;
+    for (let ty = Math.floor((p.y - r) / T); ty <= Math.floor((p.y + r) / T) && lured < 3; ty++)
+      for (let tx = Math.floor((p.x - r) / T); tx <= Math.floor((p.x + r) / T) && lured < 3; tx++) {
+        const t = g.tiles[ty * g.w + tx];
+        if (t !== W && t !== Vw) continue;
+        const cx = (tx + 0.5) * T;
+        const cy = (ty + 0.5) * T;
+        // 用面向玩家嗰邊試，光照到隻窗
+        const a = Math.atan2(p.y - cy, p.x - cx);
+        if (!canSee(g, p.x, p.y, [flash], cx + Math.cos(a) * 9, cy + Math.sin(a) * 9)) continue;
+        // 光喺窗外嗰格（窗本身係實心格，聲源要放喺行得嘅地方）
+        this.noise(cx - Math.cos(a) * T, cy - Math.sin(a) * T, NZ.windowLight);
+        lured++;
+      }
+  }
+
+  private tickAudio(dtReal: number) {
+    const s = this.s;
+    const w = weatherOf(s.minutes);
+    setLoop('rain', w === 'storm' ? 1 : w === 'rain' ? 0.5 : 0);
+    setLoop('heli', this.heliPass ? Math.max(0, 1 - Math.hypot(this.heli.x - this.player.x, this.heli.y - this.player.y) / (40 * T)) : 0);
+    const alarm = this.alarms.reduce((m, a) => Math.max(m, 1 - Math.hypot(a.x - this.player.x, a.y - this.player.y) / (40 * T)), 0);
+    setLoop('alarm', Math.max(0, alarm));
+    // 附近喪屍呻吟
+    this.groanT -= dtReal;
+    if (this.groanT <= 0) {
+      this.groanT = CONFIG.audio.groanEverySec * (0.5 + this.rand());
+      const near = this.zombies.list.filter((z) => z.active && Math.hypot(z.sprite.x - this.player.x, z.sprite.y - this.player.y) < CONFIG.audio.groanTiles * T);
+      const z = near[Math.floor(this.rand() * near.length)];
+      if (z) this.sfx('groan', z.sprite.x, z.sprite.y, CONFIG.audio.groanTiles);
+    }
+    // 驚恐心跳
+    this.heartT -= dtReal;
+    if (s.player.panic >= CONFIG.needs.panicShakeAt && this.heartT <= 0) {
+      this.heartT = 1.2 - (s.player.panic / 100) * 0.5;
+      play('heart');
+    }
+  }
+
   private checkEvac() {
     const s = this.s;
     const T7 = CONFIG.time;
@@ -913,12 +1459,20 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     s.ended = kind;
     this.scene.pause();
     showHud(false);
-    const stats = `生存 ${this.survived()} · 殺咗 ${s.player.kills} 隻喪屍 · 死過 ${s.deaths} 次`;
+    setLoop('rain', 0);
+    setLoop('alarm', 0);
+    setLoop('heli', 0);
+    const stats = `生存 ${this.survived()} · 殺咗 ${s.player.kills} 隻喪屍 · 死過 ${s.deaths} 次 · 線索 ${s.clues.length}/${story.clues.length}`;
     if (kind === 'escaped') {
       deleteSave();
-      showEnding('撤離成功', `第七日 ${clock(s.minutes)}，你登上咗北汐碼頭最後一班撤離船。<br>${stats}`, {
-        返回標題: () => location.reload(),
-      });
+      const truth = countOf(s, 'sample') > 0 && s.clues.length >= story.cluesForTruth;
+      showEnding(
+        truth ? '真相結局' : '撤離成功',
+        truth
+          ? `${story.truth}<br><br>${stats}`
+          : `第七日 ${clock(s.minutes)}，你登上咗北汐碼頭最後一班撤離船。${countOf(s, 'sample') ? '<br>你帶住個樣本箱，但係唔夠證據證明佢係咩……' : ''}<br>${stats}`,
+        { 返回標題: () => location.reload() },
+      );
     } else {
       this.saveNow();
       showEnding('留低', `18:00，撤離船開走咗。你望住佢消失喺海平線……<br>${stats}<br>北汐仍然有路走：你可以繼續生存落去。`, {
@@ -938,9 +1492,11 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     const P = s.player;
     this.dead = true;
     this.sleeping = false;
+    this.task = null;
+    setProgress(null);
     document.getElementById('sleep')!.classList.add('hidden');
     closeInventory();
-    toggleMap(false);
+    closePhone();
     this.player.body.setVelocity(0, 0);
     this.player.setVisible(false);
     const items = [...P.inv, ...(P.weapon ? [P.weapon] : []), ...(P.bag ? [P.bag] : [])];
@@ -967,7 +1523,6 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     );
   }
 
-  /** 將 Phaser 物件嘅狀態寫返入 GameState */
   private snapshot() {
     const s = this.s;
     if (!this.dead) {

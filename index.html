@@ -27,7 +27,7 @@
         <button data-act="sneak" title="潛行（C）">🥷</button>
         <button data-act="flash" title="電筒（F）">🔦</button>
         <button data-act="inv" title="背包（Tab）">🎒</button>
-        <button data-act="map" title="地圖（M）">🗺</button>
+        <button data-act="phone" title="手機（P / M）">📱</button>
         <button data-act="pause" title="暫停（Esc）">⏸</button>
       </div>
     </div>
@@ -38,12 +38,26 @@
     <div id="toast"></div>
     <div id="sleep" class="screen hidden">瞓緊覺…<small>有喪屍接近會嘈醒你</small></div>
     <div id="inv" class="panel hidden"></div>
-    <div id="map" class="panel hidden"><canvas></canvas><p>M 關閉 · 黃色 = 撤離點 · 藍點 = 你</p></div>
+    <div id="phone" class="panel hidden">
+      <div class="ph-top"><span id="ph-clock"></span><span id="ph-batt"></span></div>
+      <div class="ph-body">
+        <div data-tab="map"><canvas></canvas><p>黃 = 撤離點 · 青 = 你 · 紅 = 你嘅屍體 · 紫 = 凍倉</p></div>
+        <div data-tab="notes"></div>
+        <div data-tab="radio"></div>
+        <div data-tab="skills"></div>
+        <div class="ph-dead hidden">📵 手機冇電<br /><small>用尿袋叉電</small></div>
+      </div>
+      <div class="ph-tabs">
+        <button data-t="map">地圖</button><button data-t="notes">筆記</button><button data-t="radio">電台</button><button data-t="skills">技能</button>
+      </div>
+    </div>
     <div id="touch" class="hidden">
       <div id="stick"><div></div></div>
       <button id="t-attack">攻擊</button>
       <button id="t-shove">推</button>
       <button id="t-use" class="hidden">互動</button>
+      <button id="t-act2" class="hidden">釘板</button>
+      <button id="t-throw" class="hidden">掟</button>
     </div>
     <div id="daycard" class="screen hidden"></div>
     <div id="menu" class="screen"></div>

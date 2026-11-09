@@ -5,7 +5,7 @@ export const isTouch = () => matchMedia('(pointer: coarse)').matches || 'ontouch
 
 export const stick = { x: 0, y: 0, mag: 0 };
 
-export function setupTouch(on: { attack(): void; shove(): void; use(): void }) {
+export function setupTouch(on: { attack(): void; shove(): void; use(): void; act2(): void; throw(): void }) {
   document.getElementById('touch')!.classList.remove('hidden');
   const base = document.getElementById('stick')!;
   const knob = base.firstElementChild as HTMLElement;
@@ -50,4 +50,6 @@ export function setupTouch(on: { attack(): void; shove(): void; use(): void }) {
   btn('t-attack', on.attack);
   btn('t-shove', on.shove);
   btn('t-use', on.use);
+  btn('t-act2', on.act2);
+  btn('t-throw', on.throw);
 }

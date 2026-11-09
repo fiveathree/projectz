@@ -1,0 +1,6 @@
+{
+  "bandage": { "name": "繃帶", "needs": { "cloth": 2 }, "skill": "aid", "sec": 2 },
+  "spear": { "name": "木矛", "needs": { "plank": 1 }, "tools": ["knife"], "skill": "carp", "sec": 4 },
+  "molotov": { "name": "燃燒樽", "needs": { "bottle": 1, "alcohol": 1, "cloth": 1 }, "sec": 3 },
+  "collector": { "name": "雨水收集器", "needs": { "plank": 2, "tape": 1 }, "skill": "carp", "sec": 6 }
+}
