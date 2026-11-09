@@ -1,6 +1,7 @@
 // ASCII 樣板 → 北汐區（DESIGN.md §6.3）
 import { CONFIG } from '../config';
 import story from '../data/story.json';
+import type { DistrictId } from '../state';
 
 const RAW = import.meta.glob('./prefabs/*.txt', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 
@@ -47,6 +48,7 @@ const DEFS: TileDef[] = [
   { ch: 'V', solid: false, opaque: false }, // 爛窗（爬得過）
   { ch: 'G', solid: true, opaque: false }, // 煤氣爐
   { ch: 'K', solid: true, opaque: true }, // 凍倉鎖住嘅鐵門
+  { ch: 'Q', solid: false, opaque: false }, // 去另一個區嘅出入口
   ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ ch: String(n), solid: false, opaque: false, loot: n })),
 ];
 export const TILE_COUNT = DEFS.length;
@@ -73,6 +75,9 @@ export interface Grid {
   clues: Record<number, string>;
   /** 凍倉入面放樣本嘅雪櫃 */
   sampleTile: number;
+  /** 去另一個區嘅出入口格 */
+  exits: number[];
+  district: DistrictId;
 }
 
 /** mulberry32：有種子嘅 PRNG */
@@ -93,9 +98,15 @@ const PREFABS: Record<string, string[]> = Object.fromEntries(
 );
 /** 16 個街區用邊啲樣板（A 便利店 B 藥房茶餐廳 C 五金 D 街市 E 夜市 F 警崗 G 唐樓） */
 const BLOCK_MIX = 'AABBCCDDEEFGGGGG';
+/** 汐景邨 3×3（H 長型大廈 I 商場平台 J 遊樂場 + 管理處 + 停車場） */
+const ESTATE_MIX = 'HHHHHIIJJ';
 
-export function generateMap(rand: () => number): Grid {
-  const { blocksX, blocksY, road, dockRows, evacWidth } = CONFIG.map;
+export function generateMap(rand: () => number, district: DistrictId = 'beixi'): Grid {
+  const estate = district === 'estate';
+  const { road, evacWidth } = CONFIG.map;
+  const blocksX = estate ? CONFIG.estate.blocks : CONFIG.map.blocksX;
+  const blocksY = estate ? CONFIG.estate.blocks : CONFIG.map.blocksY;
+  const dockRows = estate ? 0 : CONFIG.map.dockRows;
   const bw = PREFABS.A[0].length;
   const bh = PREFABS.A.length;
   const w = road + blocksX * (bw + road);
@@ -105,7 +116,7 @@ export function generateMap(rand: () => number): Grid {
   const set = (x: number, y: number, ch: string) => (tiles[y * w + x] = INDEX[ch]);
 
   // 街區：洗牌後逐格放，隨機鏡像
-  const mix = [...BLOCK_MIX];
+  const mix = [...(estate ? ESTATE_MIX : BLOCK_MIX)];
   for (let i = mix.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
     [mix[i], mix[j]] = [mix[j], mix[i]];
@@ -125,9 +136,12 @@ export function generateMap(rand: () => number): Grid {
     }
   }
 
-  // 碼頭帶：行人路 → 碼頭地（有貨箱）→ 撤離點 → 海
+  // 碼頭帶：行人路 → 碼頭地（有貨箱）→ 撤離點 → 海（得北汐有）
   const evacX = Math.floor(w / 2 - evacWidth / 2);
   const evac: number[] = [];
+  const barricades: number[] = [];
+  let sampleTile = -1;
+  const vRoad = (x: number) => x % (bw + road) < road;
   for (let y = cityH; y < h; y++) {
     const r = y - cityH;
     for (let x = 0; x < w; x++) {
@@ -141,6 +155,7 @@ export function generateMap(rand: () => number): Grid {
     }
   }
 
+  if (!estate) {
   // 北汐三號凍倉：碼頭東面一間鎖住嘅貨倉，最入面個雪櫃有樣本
   const cs = { x: Math.floor(w * 0.72), y: cityH + 2, w: 12, h: 5 };
   for (let y = cs.y; y < cs.y + cs.h; y++)
@@ -149,10 +164,9 @@ export function generateMap(rand: () => number): Grid {
       set(x, y, edge ? '#' : y === cs.y + 1 && x > cs.x + 1 && x < cs.x + cs.w - 2 ? 'f' : '9');
     }
   set(cs.x + Math.floor(cs.w / 2), cs.y + cs.h - 1, 'K');
-  const sampleTile = (cs.y + 1) * w + cs.x + cs.w - 3;
+  sampleTile = (cs.y + 1) * w + cs.x + cs.w - 3;
 
   // 路邊泊車（橫向兩格），避開十字路口
-  const vRoad = (x: number) => x % (bw + road) < road;
   let cars = 0;
   for (let tries = 0; cars < CONFIG.map.cars && tries < 2000; tries++) {
     const x = Math.floor(rand() * (w - 1));
@@ -166,11 +180,20 @@ export function generateMap(rand: () => number): Grid {
   }
 
   // 第 2 日嘅路障：封住中間嗰條直路兩段
-  const barricades: number[] = [];
   const rx = road + 2 * (bw + road) - road; // 第三條直路
   for (const by of [1, 2]) {
     const y = road + by * (bh + road) + Math.floor(bh / 2);
     for (let x = rx; x < rx + road; x++) barricades.push(y * w + x);
+  }
+  }
+
+  // 出入口：北汐北面第三條直路 ↔ 汐景邨南面第二條直路
+  const exits: number[] = [];
+  const ex = (estate ? CONFIG.estate.exitRoad : CONFIG.map.exitRoad) * (bw + road);
+  const ey = estate ? h - 1 : 0;
+  for (let x = ex; x < ex + road; x++) {
+    set(x, ey, 'Q');
+    exits.push(ey * w + x);
   }
 
   // 容器屬於邊種地點：搵最近有標記嘅地板
@@ -198,13 +221,13 @@ export function generateMap(rand: () => number): Grid {
 
   // 線索：每件放喺對應地點類型嘅一個容器（按種子）
   const clues: Record<number, string> = {};
-  for (const c of story.clues) {
+  for (const c of estate ? [] : story.clues) {
     const pool: number[] = [];
     for (let i = 0; i < tiles.length; i++) if (loot[i] === c.loc && !clues[i] && i !== sampleTile) pool.push(i);
     if (pool.length) clues[pool[Math.floor(rand() * pool.length)]] = c.id;
   }
 
-  return { w, h, tiles, loot, evac, barricades, clues, sampleTile };
+  return { w, h, tiles, loot, evac, barricades, clues, sampleTile, exits, district };
 }
 
 const inside = (g: Grid, x: number, y: number) => x >= 0 && y >= 0 && x < g.w && y < g.h;

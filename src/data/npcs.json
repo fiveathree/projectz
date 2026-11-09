@@ -1,0 +1,9 @@
+{
+  "_comment": "可以招募嘅倖存者（原創角色）。want = 要咩種類物品先肯加入",
+  "ajan": { "name": "阿珍", "district": "beixi", "want": "drink", "weapon": "knife", "ask": "我困咗喺茶餐廳兩日……有冇嘢飲？", "join": "多謝你！我識用菜刀，跟住你啦。" },
+  "chanbak": { "name": "陳伯", "district": "beixi", "want": "med", "weapon": "mop", "ask": "後生仔，我隻腳整親咗……有冇藥或者繃帶？", "join": "好啲喇。我揸咗三十年小巴，條條路都識。" },
+  "fatming": { "name": "肥仔明", "district": "beixi", "want": "food", "weapon": "bat", "ask": "我送外賣送到一半就出事……餓到頭暈呀。", "join": "飽咗！我跑得快，有咩幫到你？" },
+  "kelly": { "name": "Kelly", "district": "estate", "want": "food", "weapon": "", "ask": "我係護士學生，躲咗喺屋企三日冇嘢食……", "join": "我跟你走，有人受傷我識處理。" },
+  "hosir": { "name": "何 sir", "district": "estate", "want": "med", "weapon": "baton", "ask": "我同伙記失散咗，手臂流緊血……", "join": "多謝。我仲係差人，會保護你。" },
+  "saimui": { "name": "細妹", "district": "estate", "want": "drink", "weapon": "pipe", "ask": "……屋企冇水喇。你有冇水？", "join": "我唔想一個人……我同你一齊走。" }
+}

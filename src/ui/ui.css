@@ -142,6 +142,12 @@ button:hover { border-color: var(--cyan); }
 .profs b { display: block; font-size: 16px; margin-bottom: 4px; }
 .profs small { color: var(--dim); display: block; }
 .keys { font-size: 12px; color: var(--dim); }
+/* 新遊戲設定：固定闊度，揀選項唔會令版面郁 */
+.setup { width: min(560px, 100%); display: flex; flex-direction: column; gap: 6px; }
+.setup .opt { display: grid; grid-template-columns: 130px 1fr; align-items: center; text-align: left; }
+.setup .row { justify-content: flex-start; flex-wrap: nowrap; }
+.setup button { padding: 6px 0; width: 104px; font-size: 14px; }
+.setup button.on { border-color: var(--gold); background: #3a3010; }
 #daycard { background: #000; cursor: pointer; }
 #daycard p { color: var(--text); }
 #sleep { background: #000c; font-size: 22px; pointer-events: none; }

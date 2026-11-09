@@ -186,6 +186,13 @@ function drawTile(c: Ctx, ch: string) {
       box(c, P.wood, 4, 3, 3, 2);
       box(c, P.blood, 4, 6, 3, 2);
       break;
+    case 'Q': // 去另一個區：路面箭咀
+      box(c, P.asphalt);
+      box(c, 0xe0c040, 7, 3, 2, 10);
+      box(c, 0xe0c040, 5, 5, 6, 1);
+      box(c, 0xe0c040, 4, 6, 8, 1);
+      box(c, 0x5a4a20, 0, 0, T, 1);
+      break;
     case 'K': // 凍倉鐵門 + 鐵鏈
       box(c, 0x4a5058);
       for (let x = 1; x < T; x += 3) box(c, 0x5c636c, x, 0, 1, T);
@@ -269,7 +276,7 @@ function drawTile(c: Ctx, ch: string) {
 }
 
 /** 俯視人形：兩幀行路（腳前後），向右 */
-function drawPerson(c: Ctx, ox: number, frame: number, body: number, head: number, kind: 'player' | 'zombie', detail: number) {
+function drawPerson(c: Ctx, ox: number, frame: number, body: number, head: number, kind: 'player' | 'zombie' | 'human' | 'raider', detail: number) {
   const circle = (x: number, y: number, r: number, col: number) => {
     c.fillStyle = hex(col);
     c.beginPath();
@@ -287,10 +294,14 @@ function drawPerson(c: Ctx, ox: number, frame: number, body: number, head: numbe
     box(c, head, ox + 10, 3 + f, 5, 2);
     box(c, head, ox + 10, 11 - f, 5, 2);
     box(c, P.blood, ox + 8, 6, 2, 1);
+  } else if (kind === 'raider') {
+    box(c, head, ox + 11, 10, 4, 2);
+    box(c, P.neonRed, ox + 7, 5, 4, 2); // 紅頭巾
+    box(c, 0x8a91a4, ox + 13, 8, 3, 1); // 武器
   } else {
     box(c, head, ox + 11, 10, 4, 2);
-    box(c, P.fridgeWhite, ox + 14, 10, 2, 2); // 電筒
-    box(c, 0x1a1a1a, ox + 8, 6, 2, 4); // 頭髮
+    if (kind === 'player') box(c, P.fridgeWhite, ox + 14, 10, 2, 2); // 電筒
+    box(c, kind === 'human' ? 0x6b4a32 : 0x1a1a1a, ox + 8, 6, 2, 4); // 頭髮
   }
 }
 
@@ -327,6 +338,20 @@ export class BootScene extends Phaser.Scene {
       });
     });
     for (let i = 0; i < 6; i++) zt.add(i, 0, i * 16, 0, 16, 16);
+    // 倖存者：2 款（綠衫、黃衫）；掠奪者：黑衫紅頭巾
+    const at = canvasTexture(this, 'ally', 64, 16, (c) => {
+      [[0x3a8a5a, 0x2a6a44], [0xc0a040, 0x8a7020]].forEach(([b, d], v) => {
+        for (let fr = 0; fr < 2; fr++) drawPerson(c, (v * 2 + fr) * 16, fr, b, P.skin, 'human', d);
+      });
+    });
+    for (let i = 0; i < 4; i++) at.add(i, 0, i * 16, 0, 16, 16);
+    const rt = canvasTexture(this, 'raider', 32, 16, (c) => {
+      for (let fr = 0; fr < 2; fr++) drawPerson(c, fr * 16, fr, 0x22262e, P.skin, 'raider', 0x3a3e48);
+    });
+    for (let i = 0; i < 2; i++) rt.add(i, 0, i * 16, 0, 16, 16);
+    for (let v = 0; v < 2; v++)
+      this.anims.create({ key: `ally${v}-walk`, frames: [{ key: 'ally', frame: v * 2 }, { key: 'ally', frame: v * 2 + 1 }], frameRate: 6, repeat: -1 });
+    this.anims.create({ key: 'raider0-walk', frames: [{ key: 'raider', frame: 0 }, { key: 'raider', frame: 1 }], frameRate: 7, repeat: -1 });
     this.anims.create({ key: 'p-walk', frames: [{ key: 'player', frame: 0 }, { key: 'player', frame: 1 }], frameRate: 7, repeat: -1 });
     for (let v = 0; v < 3; v++)
       this.anims.create({ key: `z${v}-walk`, frames: [{ key: 'zombie', frame: v * 2 }, { key: 'zombie', frame: v * 2 + 1 }], frameRate: 3, repeat: -1 });

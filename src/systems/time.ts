@@ -2,14 +2,29 @@
 import { CONFIG } from '../config';
 import story from '../data/story.json';
 import { dayOf, hourOf } from '../state';
+import { mulberry32 } from '../world/mapgen';
 
 export type Weather = 'clear' | 'cloudy' | 'rain' | 'storm';
 const T = CONFIG.time;
 
-/** 每真實秒過幾多遊戲分鐘 */
-export const MIN_PER_SEC = 1440 / T.dayRealSec;
+/** 每真實秒過幾多遊戲分鐘（自訂難度：一日幾多分鐘） */
+export const minPerSec = (dayMin: number) => 1440 / (dayMin * 60);
+export const MIN_PER_SEC = minPerSec(T.dayRealSec / 60);
 
-export const dayInfo = (min: number) => story.days[Math.min(dayOf(min), T.lastDay) - 1];
+export type SandboxEvent = 'horde' | 'raiders' | 'storm' | 'heli' | 'calm';
+/** 第 7 日之後（沙盒）每日隨機事件，同一個種子每次一樣 */
+export function sandboxEvent(seed: number, day: number): SandboxEvent {
+  const ev = CONFIG.sandbox.events as readonly string[];
+  return ev[Math.floor(mulberry32((seed ^ Math.imul(day, 2654435761)) >>> 0)() * ev.length)] as SandboxEvent;
+}
+let worldSeed = 0;
+/** 開新世界時設定，令 dayInfo 知道沙盒事件 */
+export const setWorldSeed = (seed: number) => (worldSeed = seed);
+
+export const dayInfo = (min: number) => {
+  const d = dayOf(min);
+  return d <= T.lastDay ? story.days[d - 1] : story.sandbox[sandboxEvent(worldSeed, d)];
+};
 export const weatherOf = (min: number) => dayInfo(min).weather as Weather;
 export const isNight = (min: number) => {
   const h = hourOf(min);

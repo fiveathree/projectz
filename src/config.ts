@@ -40,6 +40,36 @@ export const CONFIG = {
     /** 撤離點闊度（格） */
     evacWidth: 4,
     cars: 14,
+    /** 北汐北面出口喺第幾條直路 */
+    exitRoad: 2,
+  },
+
+  /** 人類：盟友倖存者、掠奪者（Phase 3） */
+  humans: {
+    reach: 16,
+    fistDamage: 5,
+    cooldown: 0.9,
+    /** 被喪屍咬中幾多機會感染、幾耐屍變（遊戲分鐘） */
+    biteChance: 0.15,
+    turnMin: 60,
+    /** 盟友數量（每區）同幫佢包紮回幾多血 */
+    perDistrict: 3,
+    bandageHeal: 30,
+    ally: { hp: 60, speed: 82, runSpeed: 130, followTiles: 2.2, fightTiles: 3.5, guardTiles: 5 },
+    raider: { hp: 70, speed: 88, sightTiles: 8, alertSec: 8, damageMin: 7, damageMax: 13, cooldown: 1.1, count: 4, weapons: ['crowbar', 'bat', 'knife', 'pipe'] },
+  },
+
+  /** 沙盒：喪屍上限、每日隨機事件 */
+  sandbox: {
+    maxZombies: 600,
+    events: ['horde', 'raiders', 'storm', 'heli', 'calm'],
+  },
+
+  /** 第二個區：汐景邨（屋邨） */
+  estate: {
+    blocks: 3,
+    exitRoad: 1,
+    startZombies: 90,
   },
 
   time: {
@@ -260,7 +290,11 @@ export const CONFIG = {
     doorBashPerSec: 1,
     doorHp: 12,
     /** 同時記住幾多張聲源流場 */
-    flowCache: 6,
+    flowCache: 8,
+    /** 新聲源喺已有流場幾多格內就借用 */
+    flowReuseTiles: 3,
+    /** 每幀最多計幾多次聲源流場（BFS） */
+    flowBudget: 2,
   },
 
   vision: {
@@ -317,7 +351,7 @@ export const CONFIG = {
 
   save: {
     key: 'typhoon-dead-save',
-    version: 2,
+    version: 3,
     /** 每幾遊戲分鐘自動存檔 */
     everyMin: 60,
     maxBlood: 400,

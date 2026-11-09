@@ -6,7 +6,7 @@ import { WorldScene } from './scenes/WorldScene';
 import { type GameState, newGame } from './state';
 import { loadGame } from './systems/save';
 import { initAudio } from './systems/audio';
-import { closeMenu, showProfessions, showTitle } from './ui/menu';
+import { closeMenu, showNewGame, showProfessions, showTitle } from './ui/menu';
 
 const game = new Phaser.Game({
   type: Phaser.WEBGL,
@@ -32,9 +32,13 @@ async function title() {
     !!save,
     () => start(save!),
     () =>
-      showProfessions(
-        '揀職業',
-        (prof) => start(newGame(CONFIG.seed || Math.floor(Math.random() * 2 ** 31), prof)),
+      showNewGame(
+        (settings) =>
+          showProfessions(
+            '揀職業',
+            (prof) => start(newGame(CONFIG.seed || Math.floor(Math.random() * 2 ** 31), prof, settings)),
+            title,
+          ),
         title,
       ),
   );

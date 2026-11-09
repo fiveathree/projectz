@@ -1,5 +1,5 @@
 // 全畫面：標題、揀職業、日卡、死亡、結局、暫停（純 DOM）
-import { PROFESSIONS } from '../state';
+import { defaultSettings, PROFESSIONS, type Settings } from '../state';
 import { getVolume, setVolume } from '../systems/audio';
 
 const menu = document.getElementById('menu')!;
@@ -27,6 +27,40 @@ export function showTitle(hasSave: boolean, onContinue: () => void, onNew: () =>
     <div class="row">${hasSave ? '<button data-b="cont">繼續</button>' : ''}<button data-b="new">新遊戲</button></div>
     <p class="keys">${KEYS}</p>`);
   bind({ cont: onContinue, new: onNew });
+}
+
+/** 新遊戲設定：模式 + 自訂難度（DESIGN.md Phase 3） */
+const OPTIONS: { key: keyof Settings; label: string; help: string; choices: [string, Settings[keyof Settings]][] }[] = [
+  { key: 'mode', label: '模式', help: '故事模式：第七日 18:00 要趕上碼頭撤離船，有結局。無限沙盒：冇船冇期限，第七日之後每日隨機出事件（屍群、掠奪者、暴雨、直升機），睇你撐到幾耐。', choices: [['故事', 'story'], ['無限沙盒', 'sandbox']] },
+  { key: 'zombies', label: '喪屍數量', help: '開局喪屍、每日新增、屍群數量嘅倍數。', choices: [['少', 0.6], ['普通', 1], ['多', 1.6]] },
+  { key: 'speed', label: '喪屍速度', help: '遊蕩同追擊速度嘅倍數。「快」嘅時候喪屍追擊會快過你行路。', choices: [['慢', 0.8], ['普通', 1], ['快', 1.2]] },
+  { key: 'loot', label: '物資', help: '每個櫃、雪櫃、貨架抽幾多樣嘢嘅倍數。', choices: [['多', 1.5], ['普通', 1], ['少', 0.6]] },
+  { key: 'dayMin', label: '一日長度', help: '一個遊戲日等於幾多分鐘真實時間。14 分鐘即係故事模式大約玩一個半鐘。', choices: [['7 分鐘', 7], ['14 分鐘', 14]] },
+  { key: 'infection', label: '感染', help: '開：被咬必死、抓傷有機會感染（Zomboid 精神）。關：咬傷只係扣血同出血。', choices: [['開', true], ['關', false]] },
+];
+
+export function showNewGame(onStart: (s: Settings) => void, onBack: () => void) {
+  const st = defaultSettings();
+  const render = () => {
+    open(`
+      <h1 style="font-size:28px">新遊戲設定</h1>
+      <div class="setup">${OPTIONS.map(
+        (o) => `<div class="opt"><span>${o.label} <span class="info" tabindex="0">ⓘ<span class="pop">${o.help}</span></span></span><div class="row">${o.choices
+          .map(([name, v], i) => `<button data-o="${o.key}:${i}" class="${st[o.key] === v ? 'on' : ''}">${name}</button>`)
+          .join('')}</div></div>`,
+      ).join('')}</div>
+      <div class="row"><button data-b="back">返回</button><button data-b="go">揀職業 →</button></div>`);
+    menu.querySelectorAll<HTMLButtonElement>('[data-o]').forEach((b) => {
+      b.onclick = () => {
+        const [k, i] = b.dataset.o!.split(':');
+        const o = OPTIONS.find((x) => x.key === k)!;
+        (st as unknown as Record<string, unknown>)[k] = o.choices[+i][1];
+        render();
+      };
+    });
+    bind({ back: onBack, go: () => onStart(st) });
+  };
+  render();
 }
 
 export function showProfessions(title: string, onPick: (id: string) => void, onBack?: () => void) {

@@ -111,8 +111,10 @@ export interface Pile {
   x: number;
   y: number;
   items: Item[];
-  /** 玩家屍體：幾時變喪屍 */
+  /** 屍體：幾時變喪屍 */
   turnAt?: number;
+  /** 倖存者屍體嘅名（冇 = 你自己） */
+  who?: string;
 }
 
 export interface ZombieSave {
@@ -120,9 +122,69 @@ export interface ZombieSave {
   y: number;
   hp: number;
   carry?: Item[];
+  who?: string;
 }
 
-export interface GameState {
+/** 人類（盟友倖存者 / 掠奪者） */
+export interface HumanSave {
+  id: string;
+  name: string;
+  faction: 'ally' | 'raider';
+  x: number;
+  y: number;
+  hp: number;
+  mode: 'idle' | 'follow' | 'guard' | 'hostile';
+  /** 要咩先肯加入（物品種類） */
+  want?: 'food' | 'drink' | 'med';
+  weapon?: string;
+  loot?: Item[];
+  /** 被咬：幾時屍變 */
+  turnAt?: number;
+  /** 守位 */
+  gx?: number;
+  gy?: number;
+}
+
+export type DistrictId = 'beixi' | 'estate';
+export const DISTRICT_NAMES: Record<DistrictId, string> = { beixi: '北汐舊城', estate: '汐景邨' };
+
+/** 每個區自己嘅世界狀態（唔喺嗰區時收埋喺 districts） */
+export interface DistrictData {
+  tileOverrides: Record<number, number>;
+  doorHp: Record<number, number>;
+  containers: Record<number, Item[]>;
+  piles: Pile[];
+  zombies: ZombieSave[] | null;
+  explored: string;
+  blood: number[];
+  structures: Structure[];
+  humans: HumanSave[] | null;
+}
+const DISTRICT_KEYS = ['tileOverrides', 'doorHp', 'containers', 'piles', 'zombies', 'explored', 'blood', 'structures', 'humans'] as const;
+export const emptyDistrict = (): DistrictData => ({
+  tileOverrides: {},
+  doorHp: {},
+  containers: {},
+  piles: [],
+  zombies: null,
+  explored: '',
+  blood: [],
+  structures: [],
+  humans: null,
+});
+
+/** 自訂難度（DESIGN.md Phase 3） */
+export interface Settings {
+  mode: 'story' | 'sandbox';
+  zombies: number;
+  speed: number;
+  loot: number;
+  dayMin: number;
+  infection: boolean;
+}
+export const defaultSettings = (): Settings => ({ mode: 'story', zombies: 1, speed: 1, loot: 1, dayMin: CONFIG.time.dayRealSec / 60, infection: true });
+
+export interface GameState extends DistrictData {
   version: number;
   seed: number;
   /** 由第 1 日 00:00 起計嘅遊戲分鐘 */
@@ -133,18 +195,32 @@ export interface GameState {
   doorHp: Record<number, number>;
   /** 搜過嘅容器：格 index → 剩低嘅物品 */
   containers: Record<number, Item[]>;
-  piles: Pile[];
-  zombies: ZombieSave[] | null;
   /** 見過嘅格（地圖用），base64 bitset */
-  explored: string;
-  blood: number[];
   /** 已經觸發咗嘅每日事件 */
   daysStarted: number;
   deaths: number;
   /** 讀過嘅線索（世界層面：新角色繼承手機筆記） */
   clues: string[];
-  structures: Structure[];
   ended: null | 'escaped' | 'stayed';
+  settings: Settings;
+  district: DistrictId;
+  /** 唔喺嗰度嘅區 */
+  districts: Partial<Record<DistrictId, DistrictData>>;
+  /** 跟住你嘅盟友（跨區） */
+  followers: HumanSave[];
+  /** 一次性事件旗（路障、碼頭喪屍…） */
+  flags: Record<string, boolean>;
+}
+
+/** 轉區：將而家嘅區收埋，攞出目標區 */
+export function switchDistrict(s: GameState, to: DistrictId) {
+  const cur = {} as Record<string, unknown>;
+  for (const k of DISTRICT_KEYS) cur[k] = s[k];
+  s.districts[s.district] = cur as unknown as DistrictData;
+  const next = s.districts[to] ?? emptyDistrict();
+  for (const k of DISTRICT_KEYS) (s as unknown as Record<string, unknown>)[k] = next[k];
+  delete s.districts[to];
+  s.district = to;
 }
 
 export function newPlayer(prof: string, x: number, y: number, minutes: number): PlayerState {
@@ -177,24 +253,22 @@ export function newPlayer(prof: string, x: number, y: number, minutes: number): 
   };
 }
 
-export function newGame(seed: number, prof: string): GameState {
+export function newGame(seed: number, prof: string, settings: Settings = defaultSettings()): GameState {
   return {
     version: CONFIG.save.version,
     seed,
     minutes: CONFIG.time.startHour * 60,
     player: newPlayer(prof, 0, 0, CONFIG.time.startHour * 60),
-    tileOverrides: {},
-    doorHp: {},
-    containers: {},
-    piles: [],
-    zombies: null,
-    explored: '',
-    blood: [],
+    ...emptyDistrict(),
     daysStarted: 0,
     deaths: 0,
     ended: null,
     clues: [],
-    structures: [],
+    settings,
+    district: 'beixi',
+    districts: {},
+    followers: [],
+    flags: {},
   };
 }
 
@@ -224,4 +298,5 @@ export const clock = (min: number) => {
   const m = Math.floor(min % 1440);
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 };
+/** 故事模式第 7 日 18:00 船開；沙盒冇期限 */
 export const deadline = () => (CONFIG.time.lastDay - 1) * 1440 + CONFIG.time.boatLeaveHour * 60;

@@ -14,6 +14,8 @@ export interface RollCtx {
   shelfMul: number;
   clue?: string;
   sample?: boolean;
+  /** 自訂難度：物資多寡 */
+  lootMul?: number;
 }
 
 /** 易壞食物嘅到期時間 */
@@ -30,7 +32,7 @@ export function rollContainer(seed: number, tile: number, type: number, ctx: Rol
   const entries = Object.entries(table.items);
   const total = entries.reduce((t, [, w]) => t + w, 0);
   const [lo, hi] = table.rolls;
-  const n = lo + Math.floor(rand() * (hi - lo + 1));
+  const n = Math.round((lo + Math.floor(rand() * (hi - lo + 1))) * (ctx.lootMul ?? 1));
   const out: Item[] = [];
   for (let i = 0; i < n; i++) {
     let r = rand() * total;

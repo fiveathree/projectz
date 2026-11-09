@@ -5,7 +5,9 @@ import story from '../data/story.json';
 import { BREAKS_TO, DEF_BY_INDEX, defAt, generateMap, type Grid, isSolid, mulberry32, solidIndices, tileIndex } from '../world/mapgen';
 import { canSee, castRay, type ViewCone, visibilityPolygon } from '../world/vision';
 import { type Zombie, Zombies, type ZWorld } from '../systems/zombies';
-import { coneTiles, darkness, dayInfo, isNight, isStorm, MIN_PER_SEC, nightness, powerOn, waterOn, weatherOf } from '../systems/time';
+import { coneTiles, darkness, dayInfo, isNight, isStorm, minPerSec, nightness, powerOn, sandboxEvent, setWorldSeed, waterOn, weatherOf } from '../systems/time';
+import { type Human, Humans, type HWorld } from '../systems/humans';
+import npcsJson from '../data/npcs.json';
 import { statusList, tickNeeds } from '../systems/needs';
 import {
   autoHotbar, canCraft, consume, cookAll, countOf, craft, dropItem, fillBottles, PLACE, RECIPES, takeItem, unequip, useHotbar, useItem,
@@ -15,7 +17,7 @@ import { b64ToBits, bitsToB64, deleteSave, saveGame } from '../systems/save';
 import { carpHpMul, carpTimeMul, gainXp, meleeDamageMul, meleeStaminaMul, SKILL_HELP, sneakNoiseMul, sneakSightMul } from '../systems/skills';
 import { play, setLoop } from '../systems/audio';
 import {
-  capacity, carried, clock, dayOf, deadline, type GameState, hourOf, ITEMS, type Item, makeItem, newPlayer, type Pile, profOf,
+  capacity, carried, clock, dayOf, deadline, DISTRICT_NAMES, type DistrictId, type GameState, type HumanSave, switchDistrict, hourOf, ITEMS, type Item, makeItem, newPlayer, type Pile, profOf,
   SKILL_NAMES, type SkillId, skillLevel, staminaMax, type Structure,
 } from '../state';
 import { renderHotbar, renderHud, setProgress, setPrompt, showHud, toast } from '../ui/hud';
@@ -57,13 +59,19 @@ interface Task {
 
 export interface WorldData {
   state: GameState;
+  /** 啱啱由另一個區過嚟：喺出入口出現 */
+  arrive?: boolean;
 }
+const NPCS = Object.entries(npcsJson).filter(([k]) => !k.startsWith('_')) as [string, { name: string; district: DistrictId; want: 'food' | 'drink' | 'med'; weapon: string; ask: string; join: string }][];
+const HC = CONFIG.humans;
+const WANT_NAME = { food: '食物', drink: '嘢飲', med: '藥物 / 繃帶' };
 
-export class WorldScene extends Phaser.Scene implements ZWorld {
+export class WorldScene extends Phaser.Scene implements ZWorld, HWorld {
   s!: GameState;
   grid!: Grid;
   tilesVersion = 0;
   zombies!: Zombies;
+  humans!: Humans;
   player!: Phaser.Physics.Arcade.Sprite & { body: Body };
   explored!: Uint8Array;
   private rand!: () => number;
@@ -105,8 +113,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
   private groanT = 0;
   private heartT = 0;
   private lastSave = 0;
-  /** 今幀有冇被喪屍打中（死因用） */
-  private hitThisFrame = false;
+  /** 今幀邊個打中你（死因用） */
+  private hitCause = '';
   private touch = false;
 
   constructor() {
@@ -126,7 +134,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.alarms = [];
     this.gradeKey = '';
     this.rand = mulberry32((s.seed ^ (s.minutes * 7919)) >>> 0);
-    const g = (this.grid = generateMap(mulberry32(s.seed)));
+    setWorldSeed(s.seed);
+    const g = (this.grid = generateMap(mulberry32(this.districtSeed()), s.district));
     for (const [i, t] of Object.entries(s.tileOverrides)) g.tiles[+i] = t;
     const mapW = g.w * T;
     const mapH = g.h * T;
@@ -146,7 +155,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.bloodRT.render();
 
     // 玩家
-    if (!s.player.x) this.placePlayer();
+    if (data.arrive) this.placeAtExit();
+    else if (!s.player.x) this.placePlayer();
     const p = this.physics.add.sprite(s.player.x, s.player.y, 'player', 0);
     p.setCircle(PL.radius, p.width / 2 - PL.radius, p.height / 2 - PL.radius).setCollideWorldBounds(true).setDepth(11);
     this.player = p as typeof this.player;
@@ -154,14 +164,25 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
 
     // 喪屍
     this.zombies = new Zombies(this, this, this.rand);
+    this.zombies.speedMul = s.settings.speed;
     this.physics.add.collider(this.zombies.group, this.layer);
-    if (s.zombies) for (const z of s.zombies) this.zombies.spawn(z.x, z.y, z.hp, z.carry);
-    else this.zombies.spawnRandom(Z.startCount, p.x, p.y, Z.minSpawnTiles);
+    if (s.zombies) for (const z of s.zombies) this.zombies.spawn(z.x, z.y, z.hp, z.carry, z.who);
+    else this.zombies.spawnRandom(Math.round((s.district === 'estate' ? CONFIG.estate.startZombies : Z.startCount) * s.settings.zombies), p.x, p.y, Z.minSpawnTiles);
+
+    // 人類：呢區嘅倖存者 / 掠奪者 + 跟住你嘅盟友
+    this.humans = new Humans(this, this, this.rand);
+    this.physics.add.collider(this.humans.group, this.layer);
+    if (!s.humans) s.humans = this.initialAllies();
+    for (const h of s.humans) this.humans.spawn(h);
+    // 跟隨者喺你後面（入城方向）兩格出現，唔會擋住出入口
+    const inward = s.district === 'estate' ? -1 : 1; // 北汐出口喺北面（向下入城），汐景邨喺南面
+    s.followers.forEach((h, i) => this.humans.spawn({ ...h, x: p.x + ((i % 3) - 1) * 14, y: data.arrive ? p.y + inward * 2 * T : p.y + 14 }));
+    s.followers = [];
 
     for (const pile of s.piles) this.pileSprite(pile);
     for (const st of s.structures) this.structSprite(st);
 
-    const evac0 = g.evac[0];
+    const evac0 = g.evac[0] ?? 0;
     this.boat = this.add
       .image(((evac0 % g.w) + CONFIG.map.evacWidth / 2) * T, (Math.floor(evac0 / g.w) + 3.2) * T, 'boat')
       .setDepth(6)
@@ -236,6 +257,90 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     }
     s.player.x = (g.w / 2) * T;
     s.player.y = (g.h / 2) * T;
+  }
+
+  private districtSeed() {
+    return this.s.district === 'estate' ? (this.s.seed ^ 0x5eed) >>> 0 : this.s.seed;
+  }
+
+  /** 由另一個區過嚟：企喺出入口內一格 */
+  private placeAtExit() {
+    const g = this.grid;
+    const e = g.exits[Math.floor(g.exits.length / 2)];
+    const inward = this.s.district === 'estate' ? -1 : 1;
+    this.s.player.x = ((e % g.w) + 0.5) * T;
+    this.s.player.y = (Math.floor(e / g.w) + 0.5 + inward * 2) * T;
+  }
+
+  /** 每區開頭嘅倖存者：喺唐樓 / 屋邨單位入面等救 */
+  private initialAllies(): HumanSave[] {
+    const g = this.grid;
+    const rand = mulberry32((this.districtSeed() ^ 0x77) >>> 0);
+    const resident = tileIndex('7');
+    const out: HumanSave[] = [];
+    const avoid = [{ x: this.s.player.x, y: this.s.player.y }];
+    for (const [id, n] of NPCS.filter(([, n]) => n.district === this.s.district)) {
+      for (let tries = 0; tries < 4000; tries++) {
+        const i = Math.floor(rand() * g.tiles.length);
+        if (g.tiles[i] !== resident) continue;
+        const x = ((i % g.w) + 0.5) * T;
+        const y = (Math.floor(i / g.w) + 0.5) * T;
+        if (avoid.some((a) => Math.hypot(a.x - x, a.y - y) < 14 * T)) continue;
+        avoid.push({ x, y });
+        out.push({ id, name: n.name, faction: 'ally', x, y, hp: HC.ally.hp, mode: 'idle', want: n.want, weapon: n.weapon || undefined });
+        break;
+      }
+    }
+    return out;
+  }
+
+  /** 掠奪者喺地圖邊出現 */
+  private spawnRaiders(n: number) {
+    const g = this.grid;
+    const p = this.player;
+    const R = HC.raider;
+    for (let k = 0, tries = 0; k < n && tries < 3000; tries++) {
+      const tx = Math.floor(this.rand() * g.w);
+      const ty = Math.floor(this.rand() * g.h);
+      if (isSolid(g, tx, ty) || (tx > 6 && tx < g.w - 7 && ty > 6)) continue;
+      const x = (tx + 0.5) * T;
+      const y = (ty + 0.5) * T;
+      if (Math.hypot(x - p.x, y - p.y) < 20 * T) continue;
+      const weapon = R.weapons[Math.floor(this.rand() * R.weapons.length)];
+      const loot = [makeItem(weapon), makeItem(this.rand() < 0.5 ? 'water' : 'luncheon'), ...(this.rand() < 0.5 ? [makeItem('bandage')] : [])];
+      this.humans.spawn({ id: `raider${Date.now() % 100000}${k}`, name: '掠奪者', faction: 'raider', x, y, hp: R.hp, mode: 'hostile', weapon, loot });
+      k++;
+    }
+    toast('⚠ 有掠奪者出現！佢哋會追殺你');
+  }
+
+  /** 只喺北汐發生嘅一次性事件（人唔喺北汐就等返嚟先做） */
+  private districtEvents() {
+    const s = this.s;
+    if (s.district !== 'beixi') return;
+    const g = this.grid;
+    const day = dayOf(s.minutes);
+    if (day >= 2 && !s.flags.barricades) {
+      s.flags.barricades = true;
+      for (const i of g.barricades) if (!isSolid(g, i % g.w, Math.floor(i / g.w))) this.setTile(i, 'X');
+    }
+    if (day >= 7 && !s.flags.dock) {
+      s.flags.dock = true;
+      const cityH = g.h - CONFIG.map.dockRows;
+      this.zombies.spawnRandom(Math.round(Z.dockExtra * s.settings.zombies), this.player.x, this.player.y, 8, (_tx, ty) => ty > cityH - 6);
+    }
+  }
+
+  /** 去另一個區 */
+  private travel(to: DistrictId) {
+    this.cancelTask();
+    closeInventory();
+    closePhone();
+    this.snapshot();
+    switchDistrict(this.s, to);
+    saveGame(this.s); // 唔可以用 saveNow：佢會 snapshot 舊區嘅喪屍
+    this.scene.restart({ state: this.s, arrive: true });
+    toast(`去咗${DISTRICT_NAMES[to]}`);
   }
 
   private setupInput() {
@@ -315,7 +420,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     if (this.sleeping) this.wake('你被襲擊嘈醒！');
     this.cancelTask();
     p.hp -= Z.damageMin + this.rand() * (Z.damageMax - Z.damageMin);
-    this.hitThisFrame = true;
+    this.hitCause = '被喪屍殺死';
     this.sfx('hurt');
     this.cameras.main.flash(120, 110, 20, 32);
     this.cameras.main.shake(CONFIG.combat.shakeMs, CONFIG.combat.shakeIntensity * 2);
@@ -334,7 +439,67 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.stampBlood(this.player.x, this.player.y);
   }
 
+  /** 倖存者 / 掠奪者行到門口會自己開門 */
+  openDoor(tile: number) {
+    this.setTile(tile, 'O');
+    const { x, y } = this.tileCenter(tile);
+    this.noise(x, y, NZ.door);
+    this.sfx('door', x, y);
+  }
+
+  /** 喪屍附近最近嘅人類 */
+  humanNear(x: number, y: number, r: number): Human | null {
+    let best: Human | null = null;
+    let bd = r;
+    for (const h of this.humans.list) {
+      const d = Math.hypot(h.sprite.x - x, h.sprite.y - y);
+      if (d < bd) {
+        bd = d;
+        best = h;
+      }
+    }
+    return best;
+  }
+
+  onAttackHuman(_z: Zombie, h: unknown) {
+    const hu = h as Human;
+    this.humans.damage(hu, Z.damageMin + this.rand() * (Z.damageMax - Z.damageMin), this.s.settings.infection, this.s.minutes);
+    this.sfx('hurt', hu.sprite.x, hu.sprite.y, 14);
+    this.stampBlood(hu.sprite.x, hu.sprite.y);
+  }
+
+  /** 掠奪者打你 */
+  hurtPlayer(dmg: number, by: string) {
+    if (this.dead) return;
+    const p = this.s.player;
+    if (this.sleeping) this.wake('有人襲擊你！');
+    this.cancelTask();
+    p.hp -= dmg;
+    this.hitCause = by;
+    this.sfx('hurt');
+    this.cameras.main.flash(120, 110, 20, 32);
+    if (this.rand() < Z.lacerationChance && !p.bleeding) {
+      p.bleeding = true;
+      toast('🩸 你被斬傷，出血！');
+    }
+    this.stampBlood(this.player.x, this.player.y);
+  }
+
+  /** 人類倒低：盟友留低屍體（會屍變），掠奪者跌物資 */
+  onHumanDown(h: Human) {
+    const s = this.s;
+    const items = h.faction === 'raider' ? h.loot ?? [] : h.weapon ? [makeItem(h.weapon)] : [];
+    const pile: Pile = { x: h.sprite.x, y: h.sprite.y, items, ...(h.faction === 'ally' ? { turnAt: s.minutes + CONFIG.corpseTurnMin, who: h.name } : {}) };
+    s.piles.push(pile);
+    this.pileSprite(pile);
+    this.stampBlood(h.sprite.x, h.sprite.y);
+    toast(h.faction === 'raider' ? '打低咗一個掠奪者，佢跌咗啲嘢' : `💀 ${h.name}死咗……`);
+    if (h.faction === 'raider') s.player.kills++;
+    this.humans.remove(h);
+  }
+
   private infect() {
+    if (!this.s.settings.infection) return; // 自訂難度：關咗感染
     const p = this.s.player;
     if (p.infectDeath !== null) return;
     const N = CONFIG.needs;
@@ -350,7 +515,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     const slow = overlay ? CONFIG.time.overlaySlow : 1;
     this.physics.world.timeScale = 1 / slow;
     const dt = dtReal * slow;
-    const dtMin = dt * MIN_PER_SEC * (this.sleeping ? CONFIG.time.sleepSpeed : 1);
+    const dtMin = dt * minPerSec(s.settings.dayMin) * (this.sleeping ? CONFIG.time.sleepSpeed : 1);
     s.minutes += dtMin;
     if (this.dead) return;
 
@@ -417,6 +582,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     if (isStorm(s.minutes)) sight *= V.stormMul;
     if (this.sneak) sight *= sneakSightMul(s);
     this.zombies.update(dt, p.x, p.y, PL.radius, sight * T, true);
+    this.humans.update(dt, p.x, p.y, true, Math.floor(p.y / T) * this.grid.w + Math.floor(p.x / T), this.tilesVersion);
 
     const cause = tickNeeds(s, dt, dtMin, {
       running,
@@ -431,8 +597,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       toast('電筒冇電');
     }
     this.tickFires(dt);
-    if (P.hp <= 0) return this.die(this.hitThisFrame ? '被喪屍殺死' : cause ?? '傷重');
-    this.hitThisFrame = false;
+    if (P.hp <= 0) return this.die(this.hitCause || (cause ?? '傷重'));
+    this.hitCause = '';
 
     this.tickEvents(dtReal, dtMin);
     this.tickSleep();
@@ -447,7 +613,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
 
     renderHud({
       day: dayOf(s.minutes),
-      title: dayInfo(s.minutes).title,
+      title: `${dayInfo(s.minutes).title} · ${DISTRICT_NAMES[s.district]}${s.settings.mode === 'sandbox' ? '（沙盒）' : ''}`,
       time: clock(s.minutes),
       weather: weatherOf(s.minutes),
       hp: P.hp,
@@ -514,6 +680,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       if (v && Math.hypot(z.sprite.x - p.x, z.sprite.y - p.y) < nearPx) near++;
     }
     this.zombiesNear = near;
+    for (const h of this.humans.list) h.sprite.setVisible(canSee(g, p.x, p.y, this.cones, h.sprite.x, h.sprite.y));
 
     const w = weatherOf(s.minutes);
     this.rain.emitting = w === 'rain' || w === 'storm';
@@ -670,7 +837,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.time.delayedCall(90, () => g.clear());
   }
 
-  private killZombie(z: Zombie) {
+  killZombie(z: Zombie) {
     this.s.player.kills++;
     this.sfx('kill', z.sprite.x, z.sprite.y);
     this.stampBlood(z.sprite.x + 3, z.sprite.y - 2);
@@ -679,7 +846,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       const pile: Pile = { x: z.sprite.x, y: z.sprite.y, items: z.carry };
       this.s.piles.push(pile);
       this.pileSprite(pile);
-      toast('你認得佢……係上一個你。佢身上仲有你嘅裝備');
+      toast(z.who ? `${z.who}……安息。佢身上仲有啲嘢` : '你認得佢……係上一個你。佢身上仲有你嘅裝備');
     }
     this.zombies.kill(z);
   }
@@ -798,6 +965,11 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
           run: () => this.pry(tile),
         };
         break;
+      case 'Q': {
+        const to: DistrictId = s.district === 'beixi' ? 'estate' : 'beixi';
+        f.e = { label: `E 去${DISTRICT_NAMES[to]}`, run: () => this.travel(to) };
+        break;
+      }
       case 'A':
         f.e = { label: 'E 弄響汽車警報（引開喪屍）', run: () => this.carAlarm(cx, cy) };
         break;
@@ -864,7 +1036,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       const dist = Math.hypot(pile.x - p.x, pile.y - p.y);
       if (dist <= PL.reach && dist < bestScore) {
         const corpse = pile.turnAt !== undefined;
-        best = { e: { label: corpse ? 'E 搜你嘅屍體' : 'E 睇地上', run: () => this.openWith(pile.items, corpse ? '你嘅屍體' : '地上', pile) } };
+        const name = pile.who ? `${pile.who}嘅屍體` : '你嘅屍體';
+        best = { e: { label: corpse ? `E 搜${name}` : 'E 睇地上', run: () => this.openWith(pile.items, corpse ? name : '地上', pile) } };
         bestScore = dist;
       }
     }
@@ -878,6 +1051,16 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
         bestScore = dist;
       }
     }
+    for (const h of this.humans.list) {
+      if (h.faction !== 'ally') continue;
+      const dist = Math.hypot(h.sprite.x - p.x, h.sprite.y - p.y);
+      const off = angDiff(Math.atan2(h.sprite.y - p.y, h.sprite.x - p.x), p.rotation);
+      const score = dist + off * 10; // 同其他互動一樣：要面向佢
+      if (dist <= PL.reach + 4 && (dist < 10 || off <= rad(80)) && score < bestScore) {
+        best = this.humanActions(h);
+        bestScore = score;
+      }
+    }
     this.focus = best;
     const label = this.task ? null : [best?.e?.label, best?.r?.label].filter(Boolean).join(' · ') || null;
     setPrompt(label);
@@ -885,6 +1068,45 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     act2.classList.toggle('hidden', !best?.r || !!this.task);
     if (best?.r) act2.textContent = best.r.label.replace(/^R /, '').replace(/（.*/, '');
     document.getElementById('t-throw')!.classList.toggle('hidden', !this.touch || !countOf(s, 'molotov'));
+  }
+
+  /** 同倖存者互動：招募 / 叫佢跟 / 叫佢守 / 幫佢包紮 */
+  private humanActions(h: Human): Focus {
+    const s = this.s;
+    const f: Focus = {};
+    if (h.mode === 'idle') {
+      f.e = {
+        label: `E 同${h.name}傾偈（佢想要${WANT_NAME[h.want ?? 'food']}）`,
+        run: () => {
+          const npc = NPCS.find(([id]) => id === h.id)?.[1];
+          const i = s.player.inv.findIndex((it) => ITEMS[it.id].kind === h.want || (h.want === 'med' && it.id === 'bandage'));
+          if (i < 0) return toast(`${h.name}：「${npc?.ask ?? '有冇嘢幫到我？'}」`);
+          s.player.inv.splice(i, 1);
+          h.mode = 'follow';
+          toast(`${h.name}：「${npc?.join ?? '多謝！'}」（加入咗）`);
+          play('chime');
+          this.renderHotbar();
+        },
+      };
+    } else {
+      f.e =
+        h.mode === 'follow'
+          ? { label: `E 叫${h.name}守喺度`, run: () => ((h.mode = 'guard'), (h.gx = h.sprite.x), (h.gy = h.sprite.y), toast(`${h.name}會守喺呢度`)) }
+          : { label: `E 叫${h.name}跟住你`, run: () => ((h.mode = 'follow'), toast(`${h.name}跟住你`)) };
+    }
+    if (h.hp < HC.ally.hp - 5 && countOf(s, 'bandage'))
+      f.r = {
+        label: `R 幫${h.name}包紮（${Math.round(h.hp)}/${HC.ally.hp}）`,
+        run: () => {
+          consume(s, 'bandage');
+          h.hp = Math.min(HC.ally.hp, h.hp + HC.bandageHeal * (profOf(s).healMul ?? 1));
+          if (h.turnAt === undefined) toast(`幫${h.name}包紮好`);
+          else toast(`幫${h.name}包紮好……但佢被咬過，唔知仲有幾耐`);
+          this.xp('aid', CONFIG.skills.xp.aid);
+          this.renderHotbar();
+        },
+      };
+    return f;
   }
 
   interact() {
@@ -1033,7 +1255,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     if (s.containers[tile]) return this.openWith(s.containers[tile], CONFIG.containers[ch].name);
     this.startTask(CONFIG.containers[ch].sec, () => {
       const g = this.grid;
-      s.containers[tile] = rollContainer(s.seed, tile, g.loot[tile], {
+      s.containers[tile] = rollContainer(this.districtSeed(), tile, g.loot[tile], {
+        lootMul: s.settings.loot,
         minutes: s.minutes,
         fridge: ch === 'f',
         shelfMul: profOf(s).shelfMul ?? 1,
@@ -1253,7 +1476,9 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     renderPhone({ clock: `第${dayOf(s.minutes)}日 ${clock(s.minutes)}`, battery: P.phone, notes, radio, skills });
     if (phoneTab() === 'map' && P.phone > 0) {
       const marks = s.piles.filter((p) => p.turnAt !== undefined).map((p) => ({ x: p.x / T, y: p.y / T, color: '#e0384f' }));
-      if (s.clues.length >= 6) {
+      for (const h of this.humans.list) if (h.faction === 'ally') marks.push({ x: h.sprite.x / T, y: h.sprite.y / T, color: h.mode === 'idle' ? '#7dc06a' : '#39d0d8' });
+      for (const e of this.grid.exits) marks.push({ x: (e % this.grid.w) + 0.5, y: Math.floor(e / this.grid.w) + 0.5, color: '#e0c040' });
+      if (s.clues.length >= 6 && this.grid.sampleTile >= 0) {
         // 線索夠多先知凍倉喺邊
         const st = this.tileCenter(this.grid.sampleTile);
         marks.push({ x: st.x / T, y: st.y / T, color: '#c04ad0' });
@@ -1294,22 +1519,27 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     toast(msg);
   }
 
+  /** 新一日：標題卡 + 世界變化（DESIGN.md §2.3；第 7 日之後係沙盒隨機事件） */
   private checkDay() {
     const s = this.s;
-    const day = Math.min(dayOf(s.minutes), CONFIG.time.lastDay);
+    const day = dayOf(s.minutes);
     if (s.daysStarted >= day) return;
     s.daysStarted = day;
     const g = this.grid;
     const p = this.player;
     const cityH = g.h - CONFIG.map.dockRows;
-    if (day >= 2) this.zombies.spawnRandom(Z.perDay, p.x, p.y, Z.minSpawnTiles, (tx, ty) => tx < 6 || tx > g.w - 7 || ty < 6);
-    if (day === 2) for (const i of g.barricades) if (!isSolid(g, i % g.w, Math.floor(i / g.w))) this.setTile(i, 'X');
-    if (day === 6) {
-      const horde = this.zombies.spawnRandom(Z.hordeSize, p.x, p.y, Z.minSpawnTiles, (tx, ty) => tx < 5 && ty < cityH);
+    // 自訂難度喪屍倍數；沙盒有上限，唔好無限加到卡
+    const n = (k: number) => Math.max(0, Math.min(CONFIG.sandbox.maxZombies - this.zombies.list.length, Math.round(k * s.settings.zombies)));
+    const ev = day > CONFIG.time.lastDay ? sandboxEvent(s.seed, day) : null;
+    if (day >= 2) this.zombies.spawnRandom(n(Z.perDay), p.x, p.y, Z.minSpawnTiles, (tx, ty) => tx < 6 || tx > g.w - 7 || ty < 6);
+    if (day === 6 || ev === 'horde') {
+      const horde = this.zombies.spawnRandom(n(Z.hordeSize), p.x, p.y, Z.minSpawnTiles, (tx, ty) => tx < 5 && ty < cityH);
       const e = g.evac[0];
-      this.zombies.sendTo(horde, ((e % g.w) + 0.5) * T, (Math.floor(e / g.w) - 3) * T);
+      if (e !== undefined) this.zombies.sendTo(horde, ((e % g.w) + 0.5) * T, (Math.floor(e / g.w) - 3) * T);
+      else this.zombies.sendTo(horde, p.x, p.y);
     }
-    if (day === 7) this.zombies.spawnRandom(Z.dockExtra, p.x, p.y, 8, (_tx, ty) => ty > cityH - 6);
+    if (day === 6 || ev === 'raiders') this.spawnRaiders(HC.raider.count);
+    this.districtEvents();
     if (this.sleeping) this.wake('新一日');
     const info = dayInfo(s.minutes);
     this.scene.pause();
@@ -1332,7 +1562,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     this.alarms = this.alarms.filter((a) => a.left > 0);
 
     // 第 2 日：直升機
-    if (dayOf(s.minutes) === 2 && !isNight(s.minutes)) {
+    const heliDay = dayOf(s.minutes) === 2 || (dayOf(s.minutes) > CONFIG.time.lastDay && sandboxEvent(s.seed, dayOf(s.minutes)) === 'heli');
+    if (heliDay && !isNight(s.minutes)) {
       if (!this.heliPass) {
         this.heliWait -= dtReal;
         if (this.heliWait <= 0) {
@@ -1377,10 +1608,18 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       for (const st of s.structures) st.water = Math.min(CONFIG.collector.capacity, st.water + add);
     }
 
+    // 被咬嘅倖存者屍變
+    for (const h of [...this.humans.list]) {
+      if (h.turnAt === undefined || s.minutes < h.turnAt) continue;
+      this.zombies.spawn(h.sprite.x, h.sprite.y, Z.hp, h.weapon ? [makeItem(h.weapon)] : [], h.name);
+      toast(`😱 ${h.name}屍變咗！`);
+      this.humans.remove(h);
+    }
+
     // 屍體變喪屍（上一輪嘅你）
     for (const pile of [...s.piles]) {
       if (pile.turnAt === undefined || s.minutes < pile.turnAt) continue;
-      this.zombies.spawn(pile.x, pile.y, Z.hp, pile.items);
+      this.zombies.spawn(pile.x, pile.y, Z.hp, pile.items, pile.who);
       this.pileSprites.get(pile)?.destroy();
       this.pileSprites.delete(pile);
       s.piles.splice(s.piles.indexOf(pile), 1);
@@ -1440,7 +1679,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     const h = hourOf(s.minutes);
     const present = dayOf(s.minutes) === T7.lastDay && h >= T7.boatArriveHour && h < T7.boatLeaveHour;
     this.boat.setVisible(present);
-    if (s.ended) return;
+    if (s.ended || s.settings.mode === 'sandbox') return;
     if (present) {
       const g = this.grid;
       const i = Math.floor(this.player.y / T) * g.w + Math.floor(this.player.x / T);
@@ -1462,7 +1701,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     setLoop('rain', 0);
     setLoop('alarm', 0);
     setLoop('heli', 0);
-    const stats = `生存 ${this.survived()} · 殺咗 ${s.player.kills} 隻喪屍 · 死過 ${s.deaths} 次 · 線索 ${s.clues.length}/${story.clues.length}`;
+    const saved = this.humans.list.filter((h) => h.mode === 'follow' && Math.hypot(h.sprite.x - this.player.x, h.sprite.y - this.player.y) < 5 * T);
+    const stats = `生存 ${this.survived()} · 殺咗 ${s.player.kills} 隻喪屍 · 死過 ${s.deaths} 次 · 線索 ${s.clues.length}/${story.clues.length} · 救咗 ${saved.length} 個人${saved.length ? `（${saved.map((h) => h.name).join('、')}）` : ''}`;
     if (kind === 'escaped') {
       deleteSave();
       const truth = countOf(s, 'sample') > 0 && s.clues.length >= story.cluesForTruth;
@@ -1477,6 +1717,7 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
       this.saveNow();
       showEnding('留低', `18:00，撤離船開走咗。你望住佢消失喺海平線……<br>${stats}<br>北汐仍然有路走：你可以繼續生存落去。`, {
         繼續生存: () => {
+          s.settings.mode = 'sandbox'; // 之後每日隨機事件
           closeMenu();
           showHud(true);
           this.scene.resume();
@@ -1531,6 +1772,8 @@ export class WorldScene extends Phaser.Scene implements ZWorld {
     }
     s.zombies = this.zombies.toSave();
     s.explored = bitsToB64(this.explored);
+    s.humans = this.humans.list.filter((h) => h.mode !== 'follow').map((h) => this.humans.toSave(h));
+    s.followers = this.humans.list.filter((h) => h.mode === 'follow').map((h) => this.humans.toSave(h));
   }
 
   saveNow() {

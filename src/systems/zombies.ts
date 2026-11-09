@@ -14,14 +14,37 @@ const DIRS = [
 ];
 const PAST_SELF_TINT = 0x9fb8ff;
 
+const DX = DIRS.map((d) => d[0]);
+const DY = DIRS.map((d) => d[1]);
+/** 每種通行規則一張表，地圖版本變咗先重算 */
+const passCache = new Map<(g: Grid, x: number, y: number) => boolean, { g: Grid; version: number; pass: Uint8Array; solid: Uint8Array }>();
+function passMaps(g: Grid, blocked: (g: Grid, x: number, y: number) => boolean, version: number) {
+  let c = passCache.get(blocked);
+  if (c && c.g === g && c.version === version) return c;
+  const pass = new Uint8Array(g.w * g.h);
+  const solid = new Uint8Array(g.w * g.h);
+  for (let y = 0; y < g.h; y++)
+    for (let x = 0; x < g.w; x++) {
+      pass[y * g.w + x] = blocked(g, x, y) ? 0 : 1;
+      solid[y * g.w + x] = isSolid(g, x, y) ? 1 : 0;
+    }
+  c = { g, version, pass, solid };
+  passCache.set(blocked, c);
+  return c;
+}
+
 /** 流場：由目標格 BFS 出嚟嘅距離表 */
-class FlowField {
+export class FlowField {
   dist: Int32Array;
   private queue: Int32Array;
   target = -1;
   version = -1;
 
-  constructor(private g: Grid) {
+  /** blocked：邊啲格行唔過（預設用喪屍規則：門窗當打得爛） */
+  constructor(
+    private g: Grid,
+    private blocked: (g: Grid, x: number, y: number) => boolean = zombieBlocked,
+  ) {
     this.dist = new Int32Array(g.w * g.h);
     this.queue = new Int32Array(g.w * g.h);
   }
@@ -31,24 +54,31 @@ class FlowField {
     this.target = t;
     this.version = version;
     const { w, h } = this.g;
-    this.dist.fill(-1);
+    // 地圖改過先重建「行得過 / 實心」表，BFS 入面唔再逐格調用函數（快 10 倍）
+    const { pass, solid } = passMaps(this.g, this.blocked, version);
+    const dist = this.dist;
+    const queue = this.queue;
+    dist.fill(-1);
     let head = 0;
     let tail = 0;
-    this.dist[t] = 0;
-    this.queue[tail++] = t;
+    dist[t] = 0;
+    queue[tail++] = t;
     while (head < tail) {
-      const c = this.queue[head++];
+      const c = queue[head++];
       const cx = c % w;
       const cy = (c - cx) / w;
-      for (const [dx, dy] of DIRS) {
+      const nd = dist[c] + 1;
+      for (let k = 0; k < 8; k++) {
+        const dx = DX[k];
+        const dy = DY[k];
         const nx = cx + dx;
         const ny = cy + dy;
-        if (nx < 0 || ny < 0 || nx >= w || ny >= h || zombieBlocked(this.g, nx, ny)) continue;
-        if (dx && dy && (isSolid(this.g, cx + dx, cy) || isSolid(this.g, cx, cy + dy))) continue;
-        const n = ny * w + nx;
-        if (this.dist[n] !== -1) continue;
-        this.dist[n] = this.dist[c] + 1;
-        this.queue[tail++] = n;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const n = c + dy * w + dx;
+        if (!pass[n] || dist[n] !== -1) continue;
+        if (dx && dy && (solid[c + dx] || solid[c + dy * w])) continue;
+        dist[n] = nd;
+        queue[tail++] = n;
       }
     }
   }
@@ -61,7 +91,7 @@ class FlowField {
     for (const [dx, dy] of DIRS) {
       const nx = tx + dx;
       const ny = ty + dy;
-      if (zombieBlocked(this.g, nx, ny)) continue;
+      if (this.blocked(this.g, nx, ny)) continue;
       if (dx && dy && (isSolid(this.g, tx + dx, ty) || isSolid(this.g, tx, ty + dy))) continue;
       const d = this.dist[ny * w + nx];
       if (d >= 0 && (best < 0 || d < best)) {
@@ -96,6 +126,8 @@ export interface Zombie {
   coarse: number;
   active: boolean;
   carry?: Item[];
+  /** 屍變咗嘅倖存者名（冇 = 上一個你） */
+  who?: string;
 }
 
 export interface ZWorld {
@@ -105,27 +137,34 @@ export interface ZWorld {
   /** 撞門 / 打窗 / 打板 */
   bashTile(tile: number, amount: number): void;
   onAttack(z: Zombie): void;
+  /** 附近有冇人類（盟友 / 掠奪者）俾喪屍咬 */
+  humanNear(x: number, y: number, r: number): unknown;
+  onAttackHuman(z: Zombie, h: unknown): void;
 }
 
 export class Zombies {
   readonly group: Phaser.Physics.Arcade.Group;
   readonly list: Zombie[] = [];
+  /** 自訂難度：喪屍速度倍數 */
+  speedMul = 1;
   private playerFlow: FlowField;
   private flows = new Map<number, FlowField>();
   private sightCursor = 0;
   private buckets = new Map<number, Zombie[]>();
+  /** 今幀仲可以計幾多次 BFS */
+  private bfsBudget = 0;
 
   constructor(scene: Phaser.Scene, private w: ZWorld, private rand: () => number) {
     this.playerFlow = new FlowField(w.grid);
     this.group = scene.physics.add.group();
   }
 
-  spawn(x: number, y: number, hp?: number, carry?: Item[]): Zombie {
+  spawn(x: number, y: number, hp?: number, carry?: Item[], who?: string): Zombie {
     const v = Math.floor(this.rand() * 3); // 3 款喪屍
     const s = this.group.create(x, y, 'zombie', v * 2) as ZSprite;
     s.play({ key: `z${v}-walk`, startFrame: Math.floor(this.rand() * 2) });
     s.setDepth(10).setCircle(Z.radius, s.width / 2 - Z.radius, s.height / 2 - Z.radius).setCollideWorldBounds(true);
-    if (carry) s.setTint(PAST_SELF_TINT); // 上一輪嘅你
+    if (carry && !who) s.setTint(PAST_SELF_TINT); // 上一輪嘅你
     const z: Zombie = {
       sprite: s,
       hp: hp ?? Z.hp + (this.rand() * 2 - 1) * Z.hpVariance,
@@ -144,6 +183,7 @@ export class Zombies {
       coarse: this.rand() * Z.coarseStepSec,
       active: true,
       carry,
+      who,
     };
     this.list.push(z);
     return z;
@@ -171,7 +211,7 @@ export class Zombies {
   }
 
   toSave(): ZombieSave[] {
-    return this.list.map((z) => ({ x: Math.round(z.sprite.x), y: Math.round(z.sprite.y), hp: Math.round(z.hp), carry: z.carry }));
+    return this.list.map((z) => ({ x: Math.round(z.sprite.x), y: Math.round(z.sprite.y), hp: Math.round(z.hp), carry: z.carry, who: z.who }));
   }
 
   private tileAt(x: number, y: number) {
@@ -217,16 +257,37 @@ export class Zombies {
     return n;
   }
 
-  private flowTo(t: number): FlowField {
+  /**
+   * 去某格嘅流場。慳計算：附近（${Z.flowReuseTiles} 格內）已有流場就借用；每幀最多計 flowBudget 次 BFS，
+   * 用晒額度就返回 null（叫喪屍直接行過去 / 下一步先計）。
+   */
+  private flowTo(t: number): FlowField | null {
     let f = this.flows.get(t);
     if (!f) {
-      if (this.flows.size >= Z.flowCache) {
-        const oldest = this.flows.keys().next().value!;
-        f = this.flows.get(oldest)!;
-        this.flows.delete(oldest);
-      } else f = new FlowField(this.w.grid);
-      this.flows.set(t, f);
+      const W = this.w.grid.w;
+      const tx = t % W;
+      const ty = (t - tx) / W;
+      for (const [k, ff] of this.flows) {
+        const kx = k % W;
+        if (Math.abs(kx - tx) + Math.abs((k - kx) / W - ty) <= Z.flowReuseTiles) {
+          f = ff;
+          break;
+        }
+      }
     }
+    if (f && f.version === this.w.tilesVersion) return f;
+    if (this.bfsBudget <= 0) return f ?? null; // 舊流場照用，總好過卡一幀
+    this.bfsBudget--;
+    if (f) {
+      f.update(f.target, this.w.tilesVersion);
+      return f;
+    }
+    if (this.flows.size >= Z.flowCache) {
+      const oldest = this.flows.keys().next().value!;
+      f = this.flows.get(oldest)!;
+      this.flows.delete(oldest);
+    } else f = new FlowField(this.w.grid);
+    this.flows.set(t, f);
     f.update(t, this.w.tilesVersion);
     return f;
   }
@@ -237,6 +298,7 @@ export class Zombies {
     const pty = Math.floor(py / T);
     const pt = pty * g.w + ptx;
     if (playerAlive) this.playerFlow.update(pt, this.w.tilesVersion);
+    this.bfsBudget = Z.flowBudget;
     const activeR = Z.activeTiles * T;
 
     // 視線：每幀分攤
@@ -277,7 +339,7 @@ export class Zombies {
         if (z.timer <= 0) {
           z.mode = 'wander';
           s.setScale(1);
-          if (z.carry) s.setTint(PAST_SELF_TINT);
+          if (z.carry && !z.who) s.setTint(PAST_SELF_TINT);
           else s.clearTint();
         }
       } else if (z.mode === 'chase') {
@@ -316,14 +378,30 @@ export class Zombies {
         if (ty * g.w + tx === z.target) {
           z.mode = 'wander';
           z.turnIn = 0;
-        } else this.follow(z, this.flowTo(z.target), tx, ty, dt);
+        } else {
+          const f = this.flowTo(z.target);
+          if (f) this.follow(z, f, tx, ty, dt);
+          else this.aim(z, Math.atan2(Math.floor(z.target / g.w) * T + T / 2 - s.y, (z.target % g.w) * T + T / 2 - s.x), Z.wanderSpeed);
+        }
       } else if (z.mode === 'wander') {
         z.turnIn -= dt;
-        const b = s.body.blocked;
-        if (z.turnIn <= 0 || b.left || b.right || b.up || b.down) {
-          z.turnIn = Z.wanderTurnMinSec + this.rand() * (Z.wanderTurnMaxSec - Z.wanderTurnMinSec);
-          if (this.rand() < 0.3) z.vx = z.vy = 0; // 企定
-          else this.aim(z, this.rand() * Math.PI * 2, Z.wanderSpeed);
+        const h = this.w.humanNear(s.x, s.y, T * 2) as { sprite: { x: number; y: number } } | null;
+        if (h) this.aim(z, Math.atan2(h.sprite.y - s.y, h.sprite.x - s.x), Z.wanderSpeed * 1.4);
+        else {
+          const b = s.body.blocked;
+          if (z.turnIn <= 0 || b.left || b.right || b.up || b.down) {
+            z.turnIn = Z.wanderTurnMinSec + this.rand() * (Z.wanderTurnMaxSec - Z.wanderTurnMinSec);
+            if (this.rand() < 0.3) z.vx = z.vy = 0; // 企定
+            else this.aim(z, this.rand() * Math.PI * 2, Z.wanderSpeed);
+          }
+        }
+      }
+      // 咬附近嘅人類（盟友 / 掠奪者）
+      if (z.mode !== 'down' && z.stagger <= 0 && z.attackCd <= 0) {
+        const h = this.w.humanNear(s.x, s.y, Z.radius * 2 + Z.attackRange);
+        if (h) {
+          z.attackCd = Z.attackCooldown;
+          this.w.onAttackHuman(z, h);
         }
       }
     }
@@ -355,11 +433,12 @@ export class Zombies {
     let tx = Math.floor(s.x / T);
     let ty = Math.floor(s.y / T);
     const moving = z.mode === 'chase' || z.mode === 'investigate';
-    const steps = Math.max(1, Math.round(((moving ? Z.chaseSpeed * 0.5 : Z.wanderSpeed) * Z.coarseStepSec) / T));
+    const steps = Math.max(1, Math.round(((moving ? Z.chaseSpeed * 0.5 : Z.wanderSpeed) * this.speedMul * Z.coarseStepSec) / T));
     for (let i = 0; i < steps; i++) {
       let ni: number;
       if (moving) {
         const f = z.mode === 'chase' ? this.playerFlow : this.flowTo(z.target);
+        if (!f) break; // 今幀冇計算額度：下一步先行
         ni = f.next(tx, ty);
         if (ni < 0 || ni === z.target) z.mode = 'wander';
       } else {
@@ -379,8 +458,8 @@ export class Zombies {
   }
 
   private aim(z: Zombie, a: number, speed: number) {
-    z.vx = Math.cos(a) * speed;
-    z.vy = Math.sin(a) * speed;
+    z.vx = Math.cos(a) * speed * this.speedMul;
+    z.vy = Math.sin(a) * speed * this.speedMul;
     z.sprite.rotation = a;
   }
 
